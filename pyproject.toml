@@ -1,0 +1,45 @@
+[project]
+name = "code-review-bot"
+version = "0.1.0"
+description = "Extensible AI-powered code review bot; pluggable coding agents, review skills, and git platform adapters."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic-settings>=2.0",
+    "agent-client-protocol>=0.10.0",
+    "json-repair>=0.59.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit>=4.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.9",
+]
+
+[project.scripts]
+code-review-bot = "code_review_bot.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/code_review_bot"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "docker"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"

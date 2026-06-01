@@ -1,0 +1,22 @@
+# Secrets
+.env*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Runtime outputs
+logs/
+
+# Bot-managed
+/repos/
+
+# Optional local skill installs (npx skills add)
+/.agents/
+/skills-lock.json
