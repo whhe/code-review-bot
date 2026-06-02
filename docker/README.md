@@ -54,8 +54,9 @@ docker run --env-file .env -v ./logs:/app/logs whhe/code-review-bot:latest --cr-
 
 ## Environment variables
 
-`bootstrap.py` runs on first container start and writes `~/.claude/settings.json` from the
-variables below. If the file already exists it is left untouched.
+`docker-entrypoint.sh` runs `bootstrap.py` on every container start; bootstrap writes
+`~/.claude/settings.json` from the variables below on first start only. If the file already
+exists it is left untouched.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -89,8 +90,12 @@ code-review:
     GIT_REPO_TOKEN: $GITLAB_TOKEN
     ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
   script:
-    - code-review-bot --cr-id $CI_MERGE_REQUEST_IID
+    - code-review-bot --cr-id "${CI_MERGE_REQUEST_IID}"
 ```
+
+The image `ENTRYPOINT` runs bootstrap setup then `exec`s the job command. GitLab passes the
+`script` via `sh -c`, so `code-review-bot --cr-id …` in `script` works without overriding
+`entrypoint`.
 
 `GIT_REPO_URL` is derived from the GitLab predefined variable `$CI_PROJECT_URL`. Set
 `GITLAB_TOKEN` and `ANTHROPIC_API_KEY` as masked CI/CD variables in that project's settings.

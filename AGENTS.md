@@ -118,7 +118,8 @@ format the skill itself may specify.
 
 ## Docker bootstrap
 
-`docker/bootstrap.py` is the container entrypoint. It only supports `ACP_AGENT_TYPE=claude`;
-any other value exits with an error. On first start it writes `~/.claude/settings.json` from
+`docker/entrypoint.sh` is the container entrypoint: it runs `docker/bootstrap.py` (Claude
+setup) then `exec`s the command. `bootstrap.py` only supports `ACP_AGENT_TYPE=claude`; any
+other value exits with an error. On first start it writes `~/.claude/settings.json` from
 `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` and optional `ANTHROPIC_MODEL` /
 `ANTHROPIC_BASE_URL`. If the file already exists it is left untouched.

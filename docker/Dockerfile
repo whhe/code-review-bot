@@ -43,7 +43,8 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then \
     fi
 
 COPY docker/bootstrap.py /usr/local/bin/bootstrap.py
-RUN chmod +x /usr/local/bin/bootstrap.py
+COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/bootstrap.py /usr/local/bin/docker-entrypoint.sh
 
 RUN useradd -m -s /bin/bash appuser \
     && mkdir -p logs/sessions logs/debug-reports \
@@ -64,5 +65,5 @@ ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY} \
     CLONE_BASE_DIR=/tmp/reviews \
     REVIEW_SKILL=~/.agents/skills/code-review
 
-ENTRYPOINT ["/usr/local/bin/bootstrap.py", "code-review-bot"]
-CMD ["--help"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["code-review-bot", "--help"]

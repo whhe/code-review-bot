@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bootstrap coding-agent settings on first container start, then exec the bot command."""
+"""Bootstrap coding-agent settings on first container start (invoked from docker/entrypoint.sh)."""
 
 import json
 import os
@@ -62,6 +62,3 @@ def setup_cc() -> None:
 if __name__ == "__main__":
     acp_agent_type()
     setup_cc()
-    if len(sys.argv) < 2:
-        fail("no command specified")
-    os.execvp(sys.argv[1], sys.argv[1:])
