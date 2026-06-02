@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from pydantic import ValidationError
 
@@ -136,18 +138,50 @@ async def test_default_skill_runs_without_gitlab_access(sample_skill_dir: object
     assert "Fix bug" in prompt
 
 
-def test_loader_rejects_missing_skill_md(tmp_path: object) -> None:
+def test_native_skill_prompt_has_contract_but_no_skill_section() -> None:
+    from code_review_bot.skill.filesystem import NativeKnowledgeSkill
+
+    skill = NativeKnowledgeSkill()
+    context = make_task_context()
+    prompt = skill.build_prompt(context)
+
+    assert "# System output contract" in prompt
+    assert "SkillResult" in prompt
+    assert "Review skill" not in prompt
+
+
+def test_loader_missing_skill_md_falls_back_to_native(
+    tmp_path: object, caplog: pytest.LogCaptureFixture
+) -> None:
     from pathlib import Path
+
+    from code_review_bot.skill.filesystem import NativeKnowledgeSkill
 
     empty_dir = Path(str(tmp_path)) / "empty-skill"
     empty_dir.mkdir()
-    with pytest.raises(ValueError, match="SKILL.md not found"):
-        load_skill(str(empty_dir))
+    with caplog.at_level(logging.WARNING, logger="code_review_bot.skill.loader"):
+        skill = load_skill(str(empty_dir))
+    assert isinstance(skill, NativeKnowledgeSkill)
+    assert "REVIEW_SKILL" in caplog.text
+    assert "native" in caplog.text.lower() or "falling back" in caplog.text.lower()
 
 
-def test_loader_rejects_empty_path() -> None:
-    with pytest.raises(ValueError, match="REVIEW_SKILL"):
-        load_skill("")
+def test_loader_nonexistent_path_falls_back_to_native(caplog: pytest.LogCaptureFixture) -> None:
+    from code_review_bot.skill.filesystem import NativeKnowledgeSkill
+
+    with caplog.at_level(logging.WARNING, logger="code_review_bot.skill.loader"):
+        skill = load_skill("/nonexistent/path/to/skill")
+    assert isinstance(skill, NativeKnowledgeSkill)
+    assert "REVIEW_SKILL" in caplog.text
+
+
+def test_loader_empty_path_returns_native_skill() -> None:
+    from code_review_bot.skill.filesystem import NativeKnowledgeSkill
+
+    skill = load_skill("")
+    assert isinstance(skill, NativeKnowledgeSkill)
+    assert skill.name == "native"
+    assert skill.additional_directories == []
 
 
 def test_loader_accepts_skill_md_path_and_uses_parent_dir(tmp_path: object) -> None:
@@ -176,14 +210,33 @@ def test_loader_accepts_absolute_local_path(tmp_path: object) -> None:
     assert skill.name == "my-skill"
 
 
-def test_loader_returns_remote_url_skill_for_https_url() -> None:
+def test_loader_returns_remote_url_skill_for_https_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from code_review_bot.skill import loader
     from code_review_bot.skill.filesystem import RemoteUrlSkill
 
+    monkeypatch.setattr(loader, "_url_reachable", lambda _url: True)
     skill = load_skill("https://github.com/whhe/ai-workshop/blob/main/skills/code-review/SKILL.md")
     assert isinstance(skill, RemoteUrlSkill)
     assert skill.name == "code-review"
     assert skill.version  # non-empty hash
     assert skill.additional_directories == []
+
+
+def test_loader_url_not_reachable_falls_back_to_native(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from code_review_bot.skill import loader
+    from code_review_bot.skill.filesystem import NativeKnowledgeSkill
+
+    monkeypatch.setattr(loader, "_url_reachable", lambda _url: False)
+    url = "https://example.com/skills/my-skill/SKILL.md"
+    with caplog.at_level(logging.WARNING, logger="code_review_bot.skill.loader"):
+        skill = load_skill(url)
+    assert isinstance(skill, NativeKnowledgeSkill)
+    assert url in caplog.text
+    assert "falling back" in caplog.text.lower()
 
 
 def test_remote_url_skill_prompt_contains_url_and_fetch_instruction() -> None:
@@ -213,9 +266,11 @@ def test_remote_url_skill_name_from_directory_url() -> None:
     assert skill.name == "code-review"
 
 
-def test_loader_rejects_whitespace_only_path() -> None:
-    with pytest.raises(ValueError, match="REVIEW_SKILL"):
-        load_skill("   ")
+def test_loader_whitespace_only_path_returns_native_skill() -> None:
+    from code_review_bot.skill.filesystem import NativeKnowledgeSkill
+
+    skill = load_skill("   ")
+    assert isinstance(skill, NativeKnowledgeSkill)
 
 
 def test_loader_resolves_relative_path_against_project_root(

@@ -58,6 +58,24 @@ class FilesystemMarkdownSkill:
         return build_review_prompt(context, str(self.skill_dir), reference_manifest)
 
 
+class NativeKnowledgeSkill:
+    """Review skill that relies on the agent's own knowledge.
+
+    Used when REVIEW_SKILL is empty. No skill directory or URL is provided;
+    the agent performs the review based on its built-in training.
+    """
+
+    name = "native"
+    version = "0"
+
+    @property
+    def additional_directories(self) -> list[str]:
+        return []
+
+    def build_prompt(self, context: object) -> str:
+        return build_review_prompt(context, "")
+
+
 class RemoteUrlSkill:
     """Review skill referenced by a remote URL.
 
@@ -99,7 +117,8 @@ def build_review_prompt(
 ) -> str:
     """Assemble the full prompt for a code review run.
 
-    skill_ref is either an absolute local directory path or an http(s) URL.
+    skill_ref is an absolute local directory path, an http(s) URL, or an empty
+    string (no skill — agent reviews using its own knowledge).
 
     context must have the following attributes:
         change_request  - ChangeRequest with title, cr_id, source_branch,
@@ -128,8 +147,9 @@ def build_review_prompt(
     included: list[str] = getattr(context, "included_patterns", [])
     filter_section = FileFilter(excluded, included).prompt_section()
 
-    is_url = skill_ref.startswith(("http://", "https://"))
-    if is_url:
+    if not skill_ref:
+        skill_section = ""
+    elif skill_ref.startswith(("http://", "https://")):
         skill_section = (
             "## Review skill\n"
             f"Skill URL: `{skill_ref}`\n"

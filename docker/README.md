@@ -27,6 +27,22 @@ docker build -f docker/Dockerfile \
 `NPM_CONFIG_REGISTRY` is inherited by `npx` when the bot launches the coding agent. Override at
 run time with `-e NPM_CONFIG_REGISTRY=...` if needed.
 
+## Default review skill
+
+The image pre-installs the public `code-review` skill from
+[whhe/ai-workshop](https://github.com/whhe/ai-workshop) via
+`npx skills add whhe/ai-workshop --skill code-review --global --yes` and sets
+`REVIEW_SKILL=~/.agents/skills/code-review`. The skill lands in the appuser
+home directory; the tilde is expanded at runtime by the bot. Reviews run with
+a consistent methodology baked into the image and require no network access to
+the skill source at runtime.
+
+To use a different skill, override `REVIEW_SKILL` when running the container:
+```bash
+docker run --env-file .env -e REVIEW_SKILL=/path/to/skill ...
+```
+To fall back to the agent's built-in knowledge (no skill), set `REVIEW_SKILL=`.
+
 ## Run
 
 ```bash

@@ -51,10 +51,18 @@ RUN useradd -m -s /bin/bash appuser \
 
 USER appuser
 
+# Install the public code-review skill into the image so reviews work without network I/O.
+# The skill is installed to ~/.agents/skills/code-review (appuser home directory).
+RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then \
+        npx --registry "$NPM_CONFIG_REGISTRY" skills add whhe/ai-workshop --skill code-review --global --yes; \
+    else \
+        npx skills add whhe/ai-workshop --skill code-review --global --yes; \
+    fi
+
 ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY} \
     CODE_REVIEW_BOT_ROOT=/app \
     CLONE_BASE_DIR=/tmp/reviews \
-    REVIEW_SKILL=https://github.com/whhe/ai-workshop/blob/main/skills/code-review/SKILL.md
+    REVIEW_SKILL=~/.agents/skills/code-review
 
 ENTRYPOINT ["/usr/local/bin/bootstrap.py", "code-review-bot"]
 CMD ["--help"]

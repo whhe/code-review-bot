@@ -11,11 +11,10 @@ agent reads the diff, follows the review methodology defined in the `SKILL.md` o
 review skill, and produces structured findings. Results are posted back to the platform as inline
 review comments and a summary note on the change request.
 
-Review skills live outside this repository. Set `REVIEW_SKILL` to a local directory path or an
-`https` URL pointing at a skill containing `SKILL.md`. When a URL is provided, the coding agent
-fetches the skill on demand using its own tools — no local copy is created. For skills used
-regularly, installing them locally is recommended (see [Using a custom review skill](#using-a-custom-review-skill)).
-The Docker image defaults `REVIEW_SKILL` to the public code-review skill URL (agent fetches on demand).
+Review skills live outside this repository. `REVIEW_SKILL` can be a local directory path or an
+`https` URL pointing at a skill containing `SKILL.md`; when empty the coding agent reviews using
+its own built-in knowledge. The Docker image pre-installs the public code-review skill and sets
+`REVIEW_SKILL=~/.agents/skills/code-review` so no network access to the skill is needed at runtime.
 
 ## Quick start
 
@@ -49,17 +48,15 @@ pre-commit run --all-files
 
 ```bash
 cp .env.example .env
-# Fill in GIT_REPO_URL, GIT_REPO_TOKEN, and REVIEW_SKILL.
+# Fill in GIT_REPO_URL and GIT_REPO_TOKEN.
 ```
 
-For local runs, `REVIEW_SKILL` defaults to the skill's GitHub URL in `.env.example`. This works
-out of the box if the coding agent has internet access, but incurs network I/O on every review.
-To install the skill locally instead:
+`REVIEW_SKILL` is optional. Leave it empty to let the agent review with its own knowledge, or
+install the public code-review skill for a structured methodology:
 
 ```bash
-npx skills add whhe/ai-workshop --skill code-review
-# installs to .agents/skills/code-review; then in .env:
-# REVIEW_SKILL=.agents/skills/code-review
+npx skills add whhe/ai-workshop --skill code-review --global --yes
+# installs to ~/.agents/skills/code-review — already the default in .env.example
 ```
 
 Built-in `ACP_AGENT_TYPE` values (`claude`, `codex`) wire the launcher in code — leave
@@ -106,7 +103,7 @@ See `.env.example` for the full list with descriptions.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `REVIEW_SKILL` | yes | see `.env.example` | Local directory path or `https` URL to a skill containing `SKILL.md`. Relative paths resolve against `CODE_REVIEW_BOT_ROOT`. For URLs, the coding agent fetches on demand — no local cache, network I/O on every run. |
+| `REVIEW_SKILL` | no | `~/.agents/skills/code-review` | Local directory path or `https` URL to a skill containing `SKILL.md`. Empty = agent uses its own built-in knowledge. If the path or URL is not accessible, the bot warns and falls back automatically. Relative paths resolve against `CODE_REVIEW_BOT_ROOT`. |
 | `REVIEW_EXCLUDE` | no | `[]` | JSON array of glob patterns for files to skip (e.g. `["dist/**", "*.pb.go"]`). Added on top of built-in defaults: `*.lock`, `*-lock.json`, `*.min.js`, `*.min.css`, `*.map`, `**/vendor/**`, `**/generated/**`. |
 | `REVIEW_INCLUDE` | no | `[]` | JSON array of glob patterns; when set, only matching files are reviewed. Empty means all files (subject to excludes). Example: `["src/**", "tests/**"]`. |
 | `OUTPUT_LANGUAGE` | no | `english` | Language for findings and the change-request summary (`english` or `chinese`). Code, configs, and identifiers stay in English. |
@@ -134,30 +131,3 @@ See `.env.example` for the full list with descriptions.
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `CODE_REVIEW_BOT_ROOT` | no | directory containing `pyproject.toml` | Root for resolving relative `LOG_DIR` and `REVIEW_SKILL` paths. Set when running the bot from outside the project tree. |
-
-## Using a custom review skill
-
-`REVIEW_SKILL` accepts two forms:
-
-**Local directory path** (recommended for skills used regularly)
-
-The path is resolved and passed to the coding agent, which reads `SKILL.md` and any
-`references/` files directly from disk. No network I/O during the review.
-
-```bash
-# Install via the skills CLI (installs to .agents/skills/<name>)
-npx skills add whhe/ai-workshop --skill code-review
-
-# Or point at any local directory containing a SKILL.md
-REVIEW_SKILL=/path/to/my-skill
-```
-
-**`https` URL** (convenient for one-off use or quick bootstrapping)
-
-The URL is passed verbatim to the coding agent. The agent fetches `SKILL.md` and any referenced
-files on demand using its own tools (e.g. WebFetch). No local copy is created — every review run
-incurs network I/O. For skills used regularly, install locally instead.
-
-```bash
-REVIEW_SKILL=https://github.com/you/your-skills/blob/main/skills/my-skill/SKILL.md
-```
