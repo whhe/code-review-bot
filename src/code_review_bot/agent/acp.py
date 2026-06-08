@@ -219,6 +219,11 @@ class AcpCodingAgent:
         client = CollectingClient()
         cwd = str(self.cwd)
         env = _resolve_env(config.env)
+        if config.model:
+            # claude-agent-acp selects the model from process.env.ANTHROPIC_MODEL (Priority 1)
+            # or settings.json top-level "model" (Priority 2). new_session() extra kwargs land
+            # in _meta which the server ignores for model selection.
+            env = {**(env or {}), "ANTHROPIC_MODEL": config.model}
         usage_dict: dict[str, Any] = {}
         async with spawn_agent_process(
             client,
@@ -243,8 +248,6 @@ class AcpCodingAgent:
                 session_kwargs: dict[str, Any] = {"cwd": cwd}
                 if additional_directories:
                     session_kwargs["additional_directories"] = additional_directories
-                if config.model:
-                    session_kwargs["model"] = config.model
                 session = await conn.new_session(**session_kwargs)
                 combined_prompt = _combine_prompt(prompt, system, files)
                 _log_acp_prompt(

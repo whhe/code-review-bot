@@ -37,26 +37,26 @@ def setup_cc() -> None:
     else:
         fail("ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is required on first container start")
 
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-6").strip()
     env: dict[str, str] = {
         cred_key: cred_value,
-        "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-6").strip(),
+        "ANTHROPIC_MODEL": model,
     }
     if base_url := os.environ.get("ANTHROPIC_BASE_URL", "").strip():
         env["ANTHROPIC_BASE_URL"] = base_url
 
+    # Top-level "model" is required: claude-agent-acp reads settings.model directly for
+    # model selection. env.ANTHROPIC_MODEL only reaches the Claude Code CLI subprocess.
+    settings = {
+        "model": model,
+        "env": env,
+        "permissions": {"defaultMode": "bypassPermissions"},
+        "skipDangerousModePermissionPrompt": True,
+    }
+    payload = json.dumps(settings, indent=2) + "\n"
+
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(
-        json.dumps(
-            {
-                "env": env,
-                "permissions": {"defaultMode": "bypassPermissions"},
-                "skipDangerousModePermissionPrompt": True,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    settings_path.write_text(payload, encoding="utf-8")
 
 
 if __name__ == "__main__":
