@@ -51,6 +51,10 @@ async def _run_review(cr_id: str, settings: Settings, debug_output_dir: str = ""
         outcome = await orchestrator.review_change_request(cr_id)
         if outcome.report_path:
             logger.info("Report: %s", outcome.report_path)
+        if outcome.approved is True:
+            logger.info("Change request approved after clean review")
+        elif outcome.approved is False:
+            logger.info("Change request approval revoked after new findings")
     finally:
         await orchestrator.adapter.aclose()
 

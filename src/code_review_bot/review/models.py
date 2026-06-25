@@ -29,3 +29,4 @@ class ReviewOutcome(BaseModel):
     published: bool = False
     inline_comments: int = 0
     report_path: str = ""
+    approved: bool | None = None

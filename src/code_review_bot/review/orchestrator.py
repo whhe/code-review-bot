@@ -8,6 +8,7 @@ from code_review_bot.logging_config import (
     attach_review_session_logging,
     detach_review_session_logging,
 )
+from code_review_bot.platforms.models import ChangeRequest
 from code_review_bot.platforms.protocol import PlatformAdapter
 from code_review_bot.repo.manager import RepoManager
 from code_review_bot.review.context import (
@@ -46,6 +47,7 @@ class ReviewOrchestrator:
         self.bound_project_path = bound_project_path
         self.settings = settings
         self._resolved_project_ref: str | None = None
+        self._platform_publish = isinstance(publisher, PlatformPublisher)
 
     @classmethod
     def from_settings(cls, settings: Settings, debug_output_dir: str = "") -> "ReviewOrchestrator":
@@ -153,11 +155,14 @@ class ReviewOrchestrator:
                 sorted(fingerprints),
                 existing_notes=notes,
             )
+            approved = await self._maybe_update_approval(cr, resolved_ref, len(new_findings))
+            outcome = outcome.model_copy(update={"approved": approved})
             logger.info(
-                "Published summary=%r published=%s inline_comments=%s",
+                "Published summary=%r published=%s inline_comments=%s approved=%s",
                 (outcome.summary or "")[:120],
                 outcome.published,
                 outcome.inline_comments,
+                outcome.approved,
             )
             return outcome
         finally:
@@ -172,3 +177,51 @@ class ReviewOrchestrator:
             raise ValueError("GIT_REPO_URL must contain a project path (e.g. group/project.git)")
         self._resolved_project_ref = await self.adapter.resolve_project_ref(self.bound_project_path)
         return self._resolved_project_ref
+
+    async def _maybe_update_approval(
+        self,
+        cr: ChangeRequest,
+        project_ref: str,
+        new_findings_count: int,
+    ) -> bool | None:
+        if not self.settings.auto_approve_on_clean_review:
+            return None
+        if not self._platform_publish:
+            return None
+        if not cr.is_open or cr.draft:
+            return None
+
+        head_sha = cr.diff_refs.get("head_sha", cr.head_sha)
+        try:
+            if new_findings_count == 0:
+                if not head_sha:
+                    logger.warning(
+                        "Skipping approval: missing head_sha project_ref=%s cr_id=%s",
+                        project_ref,
+                        cr.cr_id,
+                    )
+                    return None
+                await self.adapter.approve_change_request(project_ref, cr.cr_id, head_sha)
+                logger.info(
+                    "Approved change request project_ref=%s cr_id=%s head_sha=%s",
+                    project_ref,
+                    cr.cr_id,
+                    head_sha[:12] + "…" if len(head_sha) > 12 else head_sha,
+                )
+                return True
+            await self.adapter.revoke_change_request_approval(project_ref, cr.cr_id, head_sha)
+            logger.info(
+                "Revoked approval project_ref=%s cr_id=%s new_findings=%s",
+                project_ref,
+                cr.cr_id,
+                new_findings_count,
+            )
+            return False
+        except Exception:
+            logger.warning(
+                "Failed to update approval state project_ref=%s cr_id=%s",
+                project_ref,
+                cr.cr_id,
+                exc_info=True,
+            )
+            return None

@@ -96,6 +96,13 @@ class Settings(BaseSettings):
             'Example: REVIEW_INCLUDE=["src/**", "tests/**"]'
         ),
     )
+    auto_approve_on_clean_review: bool = Field(
+        default=False,
+        description=(
+            "When true, approve the change request after publish when no new findings "
+            "were posted; revoke approval when new findings exist."
+        ),
+    )
     clone_base_dir: str | None = None
     clone_depth: int = 0
 

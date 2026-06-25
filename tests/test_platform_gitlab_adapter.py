@@ -244,3 +244,35 @@ async def test_list_inline_threads_skips_non_diff_comments() -> None:
 
     assert all(t.description != "looks good overall" for t in result)
     await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_approve_change_request_sends_sha() -> None:
+    route = respx.post("https://gitlab.test/api/v4/projects/1/merge_requests/5/approve").mock(
+        return_value=httpx.Response(200, json={"approved": True})
+    )
+
+    adapter = GitLabAdapter(_make_client())
+    result = await adapter.approve_change_request("1", "5", "abc123")
+
+    assert result["approved"] is True
+    body = route.calls.last.request.content.decode()
+    assert "sha=abc123" in body
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_revoke_change_request_approval_calls_unapprove() -> None:
+    # GitLab unapprove returns 204 No Content (empty body)
+    route = respx.post("https://gitlab.test/api/v4/projects/1/merge_requests/5/unapprove").mock(
+        return_value=httpx.Response(204)
+    )
+
+    adapter = GitLabAdapter(_make_client())
+    result = await adapter.revoke_change_request_approval("1", "5")
+
+    assert result == {}
+    assert route.called
+    await adapter.aclose()

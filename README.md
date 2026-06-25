@@ -107,6 +107,7 @@ See `.env.example` for the full list with descriptions.
 | `REVIEW_EXCLUDE` | no | `[]` | JSON array of glob patterns for files to skip (e.g. `["dist/**", "*.pb.go"]`). Added on top of built-in defaults: `*.lock`, `*-lock.json`, `*.min.js`, `*.min.css`, `*.map`, `**/vendor/**`, `**/generated/**`. |
 | `REVIEW_INCLUDE` | no | `[]` | JSON array of glob patterns; when set, only matching files are reviewed. Empty means all files (subject to excludes). Example: `["src/**", "tests/**"]`. |
 | `OUTPUT_LANGUAGE` | no | `english` | Language for findings and the change-request summary (`english` or `chinese`). Code, configs, and identifiers stay in English. |
+| `AUTO_APPROVE_ON_CLEAN_REVIEW` | no | `false` | When `true`, approve the MR/PR after publish when no new findings were posted; revoke approval when new findings exist. Requires token approval permissions. Skipped in `--debug` mode. |
 
 ### Coding agent (ACP)
 

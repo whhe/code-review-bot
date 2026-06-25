@@ -96,3 +96,21 @@ class GitLabClient:
         )
         response.raise_for_status()
         return dict(response.json())
+
+    async def approve_merge_request(
+        self, project_id: int, mr_iid: int, sha: str
+    ) -> dict[str, object]:
+        response = await self._client.post(
+            f"/projects/{project_id}/merge_requests/{mr_iid}/approve",
+            data={"sha": sha},
+        )
+        response.raise_for_status()
+        return dict(response.json())
+
+    async def unapprove_merge_request(self, project_id: int, mr_iid: int) -> dict[str, object]:
+        response = await self._client.post(
+            f"/projects/{project_id}/merge_requests/{mr_iid}/unapprove",
+        )
+        response.raise_for_status()
+        # GitLab returns 204 No Content on success; fall back to empty dict
+        return dict(response.json()) if response.content else {}

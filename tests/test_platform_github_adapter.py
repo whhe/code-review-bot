@@ -377,3 +377,71 @@ async def test_list_inline_threads_empty_when_no_threads() -> None:
 
     assert result == []
     await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_approve_change_request_submits_approve_review() -> None:
+    route = respx.post(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        return_value=httpx.Response(200, json={"id": 1, "state": "APPROVED"})
+    )
+
+    adapter = _make_adapter()
+    result = await adapter.approve_change_request("alice/myrepo", "7", "deadbeef")
+
+    assert result["state"] == "APPROVED"
+    payload = json.loads(route.calls.last.request.content)
+    assert payload == {"event": "APPROVE", "commit_id": "deadbeef"}
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_revoke_change_request_approval_submits_request_changes() -> None:
+    route = respx.post(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        return_value=httpx.Response(200, json={"id": 2, "state": "CHANGES_REQUESTED"})
+    )
+
+    adapter = _make_adapter()
+    result = await adapter.revoke_change_request_approval("alice/myrepo", "7", head_sha="deadbeef")
+
+    assert result["state"] == "CHANGES_REQUESTED"
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["event"] == "REQUEST_CHANGES"
+    assert payload["commit_id"] == "deadbeef"
+    assert "new issues" in payload["body"]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_revoke_change_request_approval_falls_back_to_fetch_when_no_sha() -> None:
+    """When head_sha is not supplied, the adapter re-fetches the PR to obtain it."""
+    respx.get(f"{_BASE}/repos/alice/myrepo/pulls/7").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "number": 7,
+                "title": "Fix",
+                "body": "",
+                "state": "open",
+                "draft": False,
+                "user": {"login": "alice"},
+                "head": {"ref": "feature", "sha": "deadbeef"},
+                "base": {"ref": "main", "sha": "base"},
+                "html_url": "https://github.com/alice/myrepo/pull/7",
+            },
+        )
+    )
+    route = respx.post(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        return_value=httpx.Response(200, json={"id": 2, "state": "CHANGES_REQUESTED"})
+    )
+
+    adapter = _make_adapter()
+    result = await adapter.revoke_change_request_approval("alice/myrepo", "7")
+
+    assert result["state"] == "CHANGES_REQUESTED"
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["event"] == "REQUEST_CHANGES"
+    assert payload["commit_id"] == "deadbeef"
+    await adapter.aclose()

@@ -21,7 +21,7 @@ def test_settings_platform_type_defaults_to_gitlab(monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv("GIT_PLATFORM_TYPE", raising=False)
     from code_review_bot.config import Settings
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.git_platform_type == "gitlab"
 
 
@@ -209,3 +209,19 @@ def test_settings_empty_log_dir_disables_file_logging(monkeypatch: pytest.Monkey
     settings = Settings()
     assert settings.review_session_log_dir == ""
     assert settings.debug_review_output_dir == ""
+
+
+def test_settings_auto_approve_defaults_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTO_APPROVE_ON_CLEAN_REVIEW", raising=False)
+    from code_review_bot.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.auto_approve_on_clean_review is False
+
+
+def test_settings_auto_approve_reads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTO_APPROVE_ON_CLEAN_REVIEW", "true")
+    from code_review_bot.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.auto_approve_on_clean_review is True

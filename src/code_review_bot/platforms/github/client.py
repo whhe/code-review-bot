@@ -135,3 +135,22 @@ class GitHubClient:
         )
         response.raise_for_status()
         return dict(response.json())
+
+    async def create_pull_review(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        event: str,
+        commit_id: str,
+        body: str = "",
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {"event": event, "commit_id": commit_id}
+        if body:
+            payload["body"] = body
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            json=payload,
+        )
+        response.raise_for_status()
+        return dict(response.json())

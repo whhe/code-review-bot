@@ -76,6 +76,28 @@ class GitHubAdapter:
             line=position.new_line,
         )
 
+    async def approve_change_request(
+        self, project_ref: str, cr_id: str, head_sha: str
+    ) -> dict[str, object]:
+        owner, repo = _split_project_ref(project_ref)
+        return await self._client.create_pull_review(owner, repo, int(cr_id), "APPROVE", head_sha)
+
+    async def revoke_change_request_approval(
+        self, project_ref: str, cr_id: str, head_sha: str = ""
+    ) -> dict[str, object]:
+        owner, repo = _split_project_ref(project_ref)
+        if not head_sha:
+            cr = await self.fetch_change_request(project_ref, cr_id)
+            head_sha = cr.diff_refs.get("head_sha", cr.head_sha)
+        return await self._client.create_pull_review(
+            owner,
+            repo,
+            int(cr_id),
+            "REQUEST_CHANGES",
+            head_sha,
+            body="Code review found new issues.",
+        )
+
 
 def _split_project_ref(project_ref: str) -> tuple[str, str]:
     parts = project_ref.split("/", 1)

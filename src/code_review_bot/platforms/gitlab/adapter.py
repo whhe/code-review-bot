@@ -80,6 +80,16 @@ class GitLabAdapter:
             int(project_ref), int(cr_id), body, gitlab_position
         )
 
+    async def approve_change_request(
+        self, project_ref: str, cr_id: str, head_sha: str
+    ) -> dict[str, object]:
+        return await self._client.approve_merge_request(int(project_ref), int(cr_id), head_sha)
+
+    async def revoke_change_request_approval(
+        self, project_ref: str, cr_id: str, head_sha: str = ""
+    ) -> dict[str, object]:
+        return await self._client.unapprove_merge_request(int(project_ref), int(cr_id))
+
 
 def _parse_change_request(
     data: dict[str, object],

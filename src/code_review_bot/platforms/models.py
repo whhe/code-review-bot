@@ -30,6 +30,11 @@ class ChangeRequest:
     diff_refs: dict[str, str] = field(default_factory=dict)
     head_repo_url: str = ""
 
+    @property
+    def is_open(self) -> bool:
+        """True when the change request accepts review actions (GitLab: opened, GitHub: open)."""
+        return self.state in ("opened", "open")
+
 
 @dataclass
 class InlinePosition:

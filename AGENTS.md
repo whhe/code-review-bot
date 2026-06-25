@@ -62,6 +62,9 @@ src/code_review_bot/
    re-report each one.
 5. `ReviewPublisher.publish()` posts inline diff comments and a summary note, storing the new
    fingerprint set in a hidden metadata comment for the next run.
+6. When `AUTO_APPROVE_ON_CLEAN_REVIEW=true` (and not in `--debug` mode), the orchestrator
+   approves the change request if no new findings were published, or revokes approval when new
+   findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review).
 
 ## Key protocols
 
