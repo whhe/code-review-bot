@@ -37,10 +37,18 @@ home directory; the tilde is expanded at runtime by the bot. Reviews run with
 a consistent methodology baked into the image and require no network access to
 the skill source at runtime.
 
-To use a different skill, override `REVIEW_SKILL` when running the container:
+To use a different skill, override `REVIEW_SKILL` when running the container.
+The value must be a path **accessible inside the container** — the pre-installed skill
+(`~/.agents/skills/code-review`) is already there, but a custom skill file on the host
+must be mounted first:
+
 ```bash
-docker run --env-file .env -e REVIEW_SKILL=/path/to/skill ...
+docker run --env-file .env \
+  -v /host/path/to/skills:/skills \
+  -e REVIEW_SKILL=/skills/my-skill \
+  ...
 ```
+
 To fall back to the agent's built-in knowledge (no skill), set `REVIEW_SKILL=`.
 
 ## Run
