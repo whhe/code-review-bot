@@ -65,6 +65,8 @@ src/code_review_bot/
 6. When `AUTO_APPROVE_ON_CLEAN_REVIEW=true` (and not in `--debug` mode), the orchestrator
    approves the change request if no new findings were published, or revokes approval when new
    findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review).
+   When `AUTO_APPROVE_IGNORE_LOW_SEVERITY=true`, low-severity findings are excluded from this
+   decision: a review with only low-severity findings is still treated as clean.
 
 ## Key protocols
 

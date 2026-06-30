@@ -155,7 +155,17 @@ class ReviewOrchestrator:
                 sorted(fingerprints),
                 existing_notes=notes,
             )
-            approved = await self._maybe_update_approval(cr, resolved_ref, len(new_findings))
+            approval_count = len(new_findings)
+            if self.settings.auto_approve_ignore_low_severity:
+                non_low = [f for f in new_findings if f.severity != "low"]
+                if len(non_low) != approval_count:
+                    logger.info(
+                        "Approval check: ignoring %s low-severity findings, effective_count=%s",
+                        approval_count - len(non_low),
+                        len(non_low),
+                    )
+                approval_count = len(non_low)
+            approved = await self._maybe_update_approval(cr, resolved_ref, approval_count)
             outcome = outcome.model_copy(update={"approved": approved})
             logger.info(
                 "Published summary=%r published=%s inline_comments=%s approved=%s",

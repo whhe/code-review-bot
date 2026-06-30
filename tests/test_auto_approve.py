@@ -1,12 +1,16 @@
-from unittest.mock import MagicMock
+import contextlib
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from code_review_bot.config import Settings
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition
+from code_review_bot.review.models import ReviewOutcome
 from code_review_bot.review.orchestrator import ReviewOrchestrator
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
 from code_review_bot.review.publish.platform import PlatformPublisher
+from code_review_bot.skill.protocol import Finding, SkillResult
 
 
 def _make_change_request(**overrides: object) -> ChangeRequest:
@@ -272,3 +276,154 @@ async def test_maybe_update_approval_returns_none_on_revoke_failure() -> None:
     )
 
     assert approved is None
+    assert adapter.approve_calls == []
+
+
+# ---------------------------------------------------------------------------
+# AUTO_APPROVE_IGNORE_LOW_SEVERITY
+# ---------------------------------------------------------------------------
+
+
+def _make_finding(severity: str) -> Finding:
+    return Finding(
+        severity=severity,
+        description="test issue",
+        file_path="foo.py",
+        line_range="1",
+        reason="test",
+        confidence=50,
+    )
+
+
+def _make_orchestrator_ignore_low(adapter: ApprovalTrackingAdapter) -> ReviewOrchestrator:
+    settings = Settings(
+        git_repo_url="https://gitlab.test/group/project.git",
+        git_repo_token="tok",
+        auto_approve_on_clean_review=True,
+        auto_approve_ignore_low_severity=True,
+        _env_file=None,
+    )
+    return ReviewOrchestrator(
+        adapter=adapter,
+        publisher=PlatformPublisher(adapter),
+        skill_path="skills/code-review",
+        repo_manager=MagicMock(),
+        settings=settings,
+        bound_project_path="group/project",
+    )
+
+
+@contextlib.asynccontextmanager
+async def _stub_review_internals(orchestrator: ReviewOrchestrator, skill_result: SkillResult):
+    """Stub all review_change_request dependencies except the approval logic."""
+    mock_skill = MagicMock()
+    mock_skill.name = "code-review"
+    mock_skill.version = "1.0"
+    mock_skill.build_prompt.return_value = "prompt"
+    mock_skill.additional_directories = []
+
+    with contextlib.ExitStack() as stack:
+        # attach returns None (ReviewLogSession | None); detach(None) is a no-op per implementation.
+        stack.enter_context(
+            patch(
+                "code_review_bot.review.orchestrator.attach_review_session_logging",
+                return_value=None,
+            )
+        )
+        stack.enter_context(
+            patch("code_review_bot.review.orchestrator.detach_review_session_logging")
+        )
+        stack.enter_context(
+            patch("code_review_bot.review.orchestrator.load_skill", return_value=mock_skill)
+        )
+        stack.enter_context(patch("code_review_bot.review.orchestrator.build_coding_agent"))
+        mock_runner_cls = stack.enter_context(
+            patch("code_review_bot.review.orchestrator.CodingAgentReviewRunner")
+        )
+        stack.enter_context(
+            patch("code_review_bot.review.orchestrator.extract_metadata", return_value=None)
+        )
+        stack.enter_context(
+            patch(
+                "code_review_bot.review.orchestrator.compute_fingerprint",
+                side_effect=lambda name, ver, f: f"fp-{id(f)}",
+            )
+        )
+        mock_filter_cls = stack.enter_context(
+            patch("code_review_bot.review.orchestrator.FileFilter")
+        )
+
+        mock_runner_cls.return_value.review = AsyncMock(return_value=skill_result)
+        mock_filter_cls.return_value.filter_findings.return_value = (skill_result.findings, 0)
+        orchestrator.repo_manager.make_review_workspace = AsyncMock(return_value=Path("/tmp/ws"))
+        orchestrator.repo_manager.cleanup_review_workspace = MagicMock()
+        orchestrator.publisher.publish = AsyncMock(  # type: ignore[method-assign]
+            return_value=ReviewOutcome(summary="ok")
+        )
+        yield
+
+
+@pytest.mark.asyncio
+async def test_ignore_low_approves_when_only_low_findings() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator_ignore_low(adapter)
+    result = SkillResult(summary="ok", findings=[_make_finding("low"), _make_finding("low")])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert adapter.approve_calls == [("1", "5", "headsha")]
+    assert adapter.revoke_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ignore_low_revokes_when_non_low_findings_exist() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator_ignore_low(adapter)
+    result = SkillResult(summary="ok", findings=[_make_finding("low"), _make_finding("high")])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert adapter.revoke_calls == [("1", "5", "headsha")]
+    assert adapter.approve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ignore_low_disabled_revokes_on_low_only_findings() -> None:
+    adapter = ApprovalTrackingAdapter()
+    # default: auto_approve_ignore_low_severity=False
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="ok", findings=[_make_finding("low")])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert adapter.revoke_calls == [("1", "5", "headsha")]
+    assert adapter.approve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ignore_low_revokes_on_medium_only_findings() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator_ignore_low(adapter)
+    result = SkillResult(summary="ok", findings=[_make_finding("medium")])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert adapter.revoke_calls == [("1", "5", "headsha")]
+    assert adapter.approve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ignore_low_approves_when_no_findings() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator_ignore_low(adapter)
+    result = SkillResult(summary="ok", findings=[])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert adapter.approve_calls == [("1", "5", "headsha")]
+    assert adapter.revoke_calls == []

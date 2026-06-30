@@ -103,6 +103,14 @@ class Settings(BaseSettings):
             "were posted; revoke approval when new findings exist."
         ),
     )
+    auto_approve_ignore_low_severity: bool = Field(
+        default=False,
+        description=(
+            "When true, low-severity findings are excluded from the approval decision: "
+            "a review with only low-severity findings is treated as clean and approved. "
+            "Has no effect when AUTO_APPROVE_ON_CLEAN_REVIEW is false."
+        ),
+    )
     clone_base_dir: str | None = None
     clone_depth: int = 0
 
