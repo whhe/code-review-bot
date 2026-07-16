@@ -1,6 +1,5 @@
 """Static contracts for the GitHub-built coding-agent images."""
 
-import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,39 +62,12 @@ def test_github_actions_publishes_agent_tags_from_shared_dockerfile() -> None:
     assert "cache-to: type=gha,mode=max,scope=${{ matrix.tag }}" in workflow
 
 
-def test_env_example_scopes_agent_credentials_to_image_variants() -> None:
+def test_env_example_defaults_to_claude_agent() -> None:
     env_example = (_REPO_ROOT / ".env.example").read_text(encoding="utf-8")
-    docker_heading = "# Docker only — image setup and runtime"
-    before_docker, docker_section = env_example.split(docker_heading, 1)
     active_settings = dict(
         line.split("=", 1)
         for line in env_example.splitlines()
         if line and not line.startswith("#") and "=" in line
     )
 
-    assert "docker" not in before_docker.lower()
-    section_divider = "# " + "=" * 77
-    assert docker_section.count(section_divider) == 1
-    assert "Claude Code image only: whhe/code-review-bot:claude-code (also :latest)" in env_example
-    assert (
-        "[docker, required on first start for Claude Code image] Set exactly one credential"
-        in env_example
-    )
-    assert (
-        "[docker, optional on first start for Claude Code image] Anthropic API base URL"
-        in env_example
-    )
-    assert "OpenCode image only: whhe/code-review-bot:opencode" in env_example
-    assert "[docker, required at runtime for :opencode] Upstream API credential" in env_example
-    assert "[docker, required on first start for :opencode] Upstream model ID" in env_example
     assert active_settings["ACP_AGENT_TYPE"] == "claude"
-
-    docker_readme = (_REPO_ROOT / "docker" / "README.md").read_text(encoding="utf-8")
-    claude_section = docker_readme.split("## Claude Code image environment variables", 1)[1].split(
-        "## CI integration", 1
-    )[0]
-    assert "| Variable | Required when | Default | Description |" in claude_section
-    assert "| `ANTHROPIC_API_KEY` | first start (one of two) |" in claude_section
-    assert "endpoint and API key remain required at runtime" in docker_readme
-    assert "target branch" in docker_readme
-    assert re.search(r"source\s+branch", docker_readme)

@@ -23,6 +23,26 @@ def _make_adapter() -> GitHubAdapter:
     return GitHubAdapter(_make_client())
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_pull_reviews_fetches_all_pages() -> None:
+    route = respx.get(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        side_effect=[
+            httpx.Response(200, json=[{"id": item} for item in range(100)]),
+            httpx.Response(200, json=[{"id": 100}]),
+        ]
+    )
+
+    client = _make_client()
+    reviews = await client.list_pull_reviews("alice", "myrepo", 7)
+
+    assert [review["id"] for review in reviews] == list(range(101))
+    assert route.call_count == 2
+    assert dict(route.calls[0].request.url.params) == {"per_page": "100", "page": "1"}
+    assert dict(route.calls[1].request.url.params) == {"per_page": "100", "page": "2"}
+    await client.aclose()
+
+
 # --- _split_project_ref ---
 
 
@@ -96,16 +116,24 @@ async def test_fetch_pull_request_maps_to_change_request() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_list_notes_fetches_issue_comments() -> None:
+async def test_list_notes_fetches_issue_comments_and_pull_reviews() -> None:
     respx.get(f"{_BASE}/repos/alice/myrepo/issues/7/comments").mock(
-        return_value=httpx.Response(200, json=[{"id": 1, "body": "comment"}])
+        return_value=httpx.Response(
+            200,
+            json=[{"id": 1, "body": "comment", "created_at": "2026-07-16T02:00:00Z"}],
+        )
+    )
+    respx.get(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": 2, "body": "review", "submitted_at": "2026-07-16T01:00:00Z"}],
+        )
     )
 
     adapter = _make_adapter()
     notes = await adapter.list_notes("alice/myrepo", "7")
 
-    assert len(notes) == 1
-    assert notes[0]["id"] == 1
+    assert [note["id"] for note in notes] == [2, 1]
 
     await adapter.aclose()
 
@@ -381,35 +409,43 @@ async def test_list_inline_threads_empty_when_no_threads() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_approve_change_request_submits_approve_review() -> None:
+async def test_approve_change_request_with_body_submits_approve_review() -> None:
     route = respx.post(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
         return_value=httpx.Response(200, json={"id": 1, "state": "APPROVED"})
     )
 
     adapter = _make_adapter()
-    result = await adapter.approve_change_request("alice/myrepo", "7", "deadbeef")
+    result = await adapter.approve_change_request_with_body(
+        "alice/myrepo", "7", "deadbeef", body="Full review summary"
+    )
 
     assert result["state"] == "APPROVED"
     payload = json.loads(route.calls.last.request.content)
-    assert payload == {"event": "APPROVE", "commit_id": "deadbeef"}
+    assert payload == {
+        "event": "APPROVE",
+        "commit_id": "deadbeef",
+        "body": "Full review summary",
+    }
     await adapter.aclose()
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_revoke_change_request_approval_submits_request_changes() -> None:
+async def test_revoke_change_request_approval_with_body_submits_request_changes() -> None:
     route = respx.post(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
         return_value=httpx.Response(200, json={"id": 2, "state": "CHANGES_REQUESTED"})
     )
 
     adapter = _make_adapter()
-    result = await adapter.revoke_change_request_approval("alice/myrepo", "7", head_sha="deadbeef")
+    result = await adapter.revoke_change_request_approval_with_body(
+        "alice/myrepo", "7", head_sha="deadbeef", body="Full review summary"
+    )
 
     assert result["state"] == "CHANGES_REQUESTED"
     payload = json.loads(route.calls.last.request.content)
     assert payload["event"] == "REQUEST_CHANGES"
     assert payload["commit_id"] == "deadbeef"
-    assert "new issues" in payload["body"]
+    assert payload["body"] == "Full review summary"
     await adapter.aclose()
 
 
@@ -444,4 +480,5 @@ async def test_revoke_change_request_approval_falls_back_to_fetch_when_no_sha() 
     payload = json.loads(route.calls.last.request.content)
     assert payload["event"] == "REQUEST_CHANGES"
     assert payload["commit_id"] == "deadbeef"
+    assert payload["body"] == "Code review found new issues."
     await adapter.aclose()

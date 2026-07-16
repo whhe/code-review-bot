@@ -31,6 +31,7 @@ class PlatformPublisher:
         fingerprints: list[str],
         existing_notes: list[dict[str, object]] | None = None,
         resolved_findings: list[Finding] | None = None,
+        publish_summary: bool = True,
     ) -> ReviewOutcome:
         located_count, unlocated = await self._publish_inline(cr, result.findings)
         severity_counts = count_findings_by_severity(result.findings)
@@ -45,11 +46,13 @@ class PlatformPublisher:
             skill_version=skill_version,
             fingerprints=fingerprints,
         )
-        await self.adapter.publish_summary(cr.project_ref, cr.cr_id, body)
+        if publish_summary:
+            await self.adapter.publish_summary(cr.project_ref, cr.cr_id, body)
         return ReviewOutcome(
             summary=result.summary,
             published=True,
             inline_comments=located_count,
+            review_body=body,
         )
 
     async def _publish_inline(

@@ -9,7 +9,8 @@ adapters can be added behind the same interface.
 The bot clones the change-request branch, then delegates the entire review to a coding agent. The
 agent reads the diff, follows the review methodology defined in the `SKILL.md` of the configured
 review skill, and produces structured findings. Results are posted back to the platform as inline
-review comments and a summary note on the change request.
+review comments and a summary on the change request. On GitHub, when automatic approval is
+enabled, the summary is used as the final `APPROVE` or `REQUEST_CHANGES` review body.
 
 Review skills live outside this repository. `REVIEW_SKILL` can be a local directory path or an
 `https` URL pointing at a skill containing `SKILL.md`; when empty the coding agent reviews using
@@ -107,7 +108,7 @@ See `.env.example` for the full list with descriptions.
 | `REVIEW_EXCLUDE` | no | `[]` | JSON array of glob patterns for files to skip (e.g. `["dist/**", "*.pb.go"]`). Added on top of built-in defaults: `*.lock`, `*-lock.json`, `*.min.js`, `*.min.css`, `*.map`, `**/vendor/**`, `**/generated/**`. |
 | `REVIEW_INCLUDE` | no | `[]` | JSON array of glob patterns; when set, only matching files are reviewed. Empty means all files (subject to excludes). Example: `["src/**", "tests/**"]`. |
 | `OUTPUT_LANGUAGE` | no | `english` | Language for findings and the change-request summary (`english` or `chinese`). Code, configs, and identifiers stay in English. |
-| `AUTO_APPROVE_ON_CLEAN_REVIEW` | no | `false` | When `true`, approve the MR/PR after publish when no new findings were posted; revoke approval when new findings exist. Requires token approval permissions. Skipped in `--debug` mode. |
+| `AUTO_APPROVE_ON_CLEAN_REVIEW` | no | `false` | When `true`, approve the MR/PR after publish when no new findings were posted; revoke approval when new findings exist. On GitHub, the full summary is published as that review's body instead of a separate issue comment. Requires token approval permissions. Skipped in `--debug` mode. |
 | `AUTO_APPROVE_IGNORE_LOW_SEVERITY` | no | `false` | When `true`, low-severity findings are excluded from the approval decision: a review with only low-severity findings is treated as clean and approved. Has no effect when `AUTO_APPROVE_ON_CLEAN_REVIEW` is `false`. |
 
 ### Coding agent (ACP)

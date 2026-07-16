@@ -47,6 +47,9 @@ class ApprovalTrackingAdapter:
     def __init__(self) -> None:
         self.approve_calls: list[tuple[str, str, str]] = []
         self.revoke_calls: list[tuple[str, str, str]] = []
+        self.approve_bodies: list[str] = []
+        self.revoke_bodies: list[str] = []
+        self.summary_bodies: list[str] = []
 
     async def resolve_project_ref(self, project_path: str) -> str:
         return "1"
@@ -61,6 +64,7 @@ class ApprovalTrackingAdapter:
         return []
 
     async def publish_summary(self, project_ref: str, cr_id: str, body: str) -> dict[str, object]:
+        self.summary_bodies.append(body)
         return {"id": 1}
 
     async def publish_inline_comment(
@@ -73,6 +77,25 @@ class ApprovalTrackingAdapter:
         return {"id": 1}
 
     async def approve_change_request(
+        self, project_ref: str, cr_id: str, head_sha: str, body: str = ""
+    ) -> dict[str, object]:
+        self.approve_calls.append((project_ref, cr_id, head_sha))
+        self.approve_bodies.append(body)
+        return {"approved": True}
+
+    async def revoke_change_request_approval(
+        self, project_ref: str, cr_id: str, head_sha: str = "", body: str = ""
+    ) -> dict[str, object]:
+        self.revoke_calls.append((project_ref, cr_id, head_sha))
+        self.revoke_bodies.append(body)
+        return {"approved": False}
+
+    async def aclose(self) -> None:
+        pass
+
+
+class LegacyApprovalAdapter(ApprovalTrackingAdapter):
+    async def approve_change_request(
         self, project_ref: str, cr_id: str, head_sha: str
     ) -> dict[str, object]:
         self.approve_calls.append((project_ref, cr_id, head_sha))
@@ -84,8 +107,35 @@ class ApprovalTrackingAdapter:
         self.revoke_calls.append((project_ref, cr_id, head_sha))
         return {"approved": False}
 
-    async def aclose(self) -> None:
-        pass
+
+class ReviewBodyApprovalTrackingAdapter(ApprovalTrackingAdapter):
+    async def approve_change_request_with_body(
+        self, project_ref: str, cr_id: str, head_sha: str, body: str
+    ) -> dict[str, object]:
+        return await self.approve_change_request(project_ref, cr_id, head_sha, body=body)
+
+    async def revoke_change_request_approval_with_body(
+        self, project_ref: str, cr_id: str, head_sha: str, body: str
+    ) -> dict[str, object]:
+        return await self.revoke_change_request_approval(project_ref, cr_id, head_sha, body=body)
+
+
+class LegacyPublisher:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def publish(
+        self,
+        cr: ChangeRequest,
+        result: SkillResult,
+        skill_name: str,
+        skill_version: str,
+        fingerprints: list[str],
+        existing_notes: list[dict[str, object]] | None = None,
+        resolved_findings: list[Finding] | None = None,
+    ) -> ReviewOutcome:
+        self.calls += 1
+        return ReviewOutcome(summary=result.summary)
 
 
 def _make_orchestrator(
@@ -127,6 +177,19 @@ async def test_maybe_update_approval_approves_when_no_new_findings() -> None:
     assert approved is True
     assert adapter.approve_calls == [("1", "5", "headsha")]
     assert adapter.revoke_calls == []
+
+
+@pytest.mark.asyncio
+async def test_maybe_update_approval_preserves_legacy_platform_adapter_contract() -> None:
+    adapter = LegacyApprovalAdapter()
+    orchestrator = _make_orchestrator(adapter)
+
+    approved = await orchestrator._maybe_update_approval(
+        _make_change_request(), "1", new_findings_count=0
+    )
+
+    assert approved is True
+    assert adapter.approve_calls == [("1", "5", "headsha")]
 
 
 @pytest.mark.asyncio
@@ -314,7 +377,12 @@ def _make_orchestrator_ignore_low(adapter: ApprovalTrackingAdapter) -> ReviewOrc
 
 
 @contextlib.asynccontextmanager
-async def _stub_review_internals(orchestrator: ReviewOrchestrator, skill_result: SkillResult):
+async def _stub_review_internals(
+    orchestrator: ReviewOrchestrator,
+    skill_result: SkillResult,
+    *,
+    stub_publisher: bool = True,
+):
     """Stub all review_change_request dependencies except the approval logic."""
     mock_skill = MagicMock()
     mock_skill.name = "code-review"
@@ -357,10 +425,78 @@ async def _stub_review_internals(orchestrator: ReviewOrchestrator, skill_result:
         mock_filter_cls.return_value.filter_findings.return_value = (skill_result.findings, 0)
         orchestrator.repo_manager.make_review_workspace = AsyncMock(return_value=Path("/tmp/ws"))
         orchestrator.repo_manager.cleanup_review_workspace = MagicMock()
-        orchestrator.publisher.publish = AsyncMock(  # type: ignore[method-assign]
-            return_value=ReviewOutcome(summary="ok")
-        )
+        if stub_publisher:
+            orchestrator.publisher.publish = AsyncMock(  # type: ignore[method-assign]
+                return_value=ReviewOutcome(summary="ok", review_body="Full review summary")
+            )
         yield
+
+
+@pytest.mark.asyncio
+async def test_review_preserves_legacy_publisher_contract() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator(adapter, auto_approve=False)
+    publisher = LegacyPublisher()
+    orchestrator.publisher = publisher
+    orchestrator._platform_publish = False
+
+    async with _stub_review_internals(
+        orchestrator, SkillResult(summary="ok", findings=[]), stub_publisher=False
+    ):
+        outcome = await orchestrator.review_change_request("5")
+
+    assert outcome.summary == "ok"
+    assert publisher.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_github_auto_approval_publishes_summary_as_single_review() -> None:
+    adapter = ReviewBodyApprovalTrackingAdapter()
+    adapter.platform_name = "github"
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="ok", findings=[_make_finding("high")])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert orchestrator.publisher.publish.await_args.kwargs["publish_summary"] is False
+    assert adapter.revoke_bodies == ["Full review summary"]
+    assert adapter.summary_bodies == []
+
+
+@pytest.mark.asyncio
+async def test_github_legacy_adapter_keeps_separate_summary_and_approval() -> None:
+    adapter = LegacyApprovalAdapter()
+    adapter.platform_name = "github"
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="ok", findings=[])
+
+    async with _stub_review_internals(orchestrator, result):
+        outcome = await orchestrator.review_change_request("5")
+
+    assert orchestrator.publisher.publish.await_args.kwargs["publish_summary"] is True
+    assert adapter.approve_calls == [("1", "5", "headsha")]
+    assert outcome.approved is True
+
+
+@pytest.mark.asyncio
+async def test_github_auto_approval_falls_back_to_summary_when_review_fails() -> None:
+    adapter = ReviewBodyApprovalTrackingAdapter()
+    adapter.platform_name = "github"
+
+    async def failing_approve(
+        project_ref: str, cr_id: str, head_sha: str, body: str = ""
+    ) -> dict[str, object]:
+        raise RuntimeError("forbidden")
+
+    adapter.approve_change_request_with_body = failing_approve  # type: ignore[method-assign]
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="ok", findings=[])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert adapter.summary_bodies == ["Full review summary"]
 
 
 @pytest.mark.asyncio

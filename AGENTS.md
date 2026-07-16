@@ -38,7 +38,7 @@ src/code_review_bot/
 │   ├── models.py           # ReviewTaskContext, ReviewOutcome
 │   └── publish/
 │       ├── protocol.py     # ReviewPublisher protocol
-│       ├── platform.py     # posts inline comments + summary note to the git platform
+│       ├── platform.py     # posts inline comments + summary to the git platform
 │       └── debug.py        # writes Markdown report to disk (--debug mode)
 ├── skill/
 │   ├── protocol.py         # ReviewSkill protocol; Finding and SkillResult pydantic models
@@ -63,22 +63,28 @@ src/code_review_bot/
    prior review's stored metadata. All inline comment threads (resolved and open) are included in
    the prompt via `<inline_threads>`; the agent applies the embedded rules to decide whether to
    re-report each one.
-5. `ReviewPublisher.publish()` posts inline diff comments and a summary note, storing the new
-   fingerprint set in a hidden metadata comment for the next run.
+5. `ReviewPublisher.publish()` posts inline diff comments and formats the summary, storing the new
+   fingerprint set in hidden metadata for the next run. GitLab and GitHub without automatic
+   approval post it as a note; GitHub with automatic approval defers it to the final review body.
 6. When `AUTO_APPROVE_ON_CLEAN_REVIEW=true` (and not in `--debug` mode), the orchestrator
    approves the change request if no new findings were published, or revokes approval when new
-   findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review).
+   findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review
+   containing the full summary). If the GitHub review cannot be submitted, the summary falls back
+   to an issue comment.
    When `AUTO_APPROVE_IGNORE_LOW_SEVERITY=true`, low-severity findings are excluded from this
    decision: a review with only low-severity findings is still treated as clean.
 
 ## Key protocols
 
-All three are `typing.Protocol` — swap an implementation by updating the corresponding factory.
+The core interfaces are `typing.Protocol` types; swap an implementation by updating the
+corresponding factory. `ReviewBodyApprovalAdapter` is an optional runtime-checkable capability used
+to consolidate a GitHub summary into the final review decision.
 
 | Protocol | Module | Factory |
 |---|---|---|
 | `CodingAgent` | `agent/protocol.py` | `agent/factory.py` — `build_coding_agent()` |
 | `PlatformAdapter` | `platforms/protocol.py` | `platforms/factory.py` — `build_platform_adapter()` |
+| `ReviewBodyApprovalAdapter` | `platforms/protocol.py` | implemented by the GitHub adapter |
 | `ReviewPublisher` | `review/publish/protocol.py` | instantiated in `orchestrator.py` |
 
 ## Extension points

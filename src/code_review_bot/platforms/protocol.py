@@ -1,4 +1,4 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition, InlineThread
 
@@ -39,3 +39,16 @@ class PlatformAdapter(Protocol):
     ) -> dict[str, object]: ...
 
     async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class ReviewBodyApprovalAdapter(Protocol):
+    """Optional capability for publishing approval decisions with a full review body."""
+
+    async def approve_change_request_with_body(
+        self, project_ref: str, cr_id: str, head_sha: str, body: str
+    ) -> dict[str, object]: ...
+
+    async def revoke_change_request_approval_with_body(
+        self, project_ref: str, cr_id: str, head_sha: str, body: str
+    ) -> dict[str, object]: ...

@@ -30,3 +30,4 @@ class ReviewOutcome(BaseModel):
     inline_comments: int = 0
     report_path: str = ""
     approved: bool | None = None
+    review_body: str = ""
