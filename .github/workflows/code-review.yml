@@ -34,7 +34,12 @@ jobs:
           persist-credentials: false
 
       - name: Build review image
-        run: docker build --target opencode --tag code-review-bot:pr-head .
+        run: >-
+          docker build
+          --file docker/Dockerfile
+          --target opencode
+          --tag code-review-bot:pr-head
+          .
 
       - name: Run code review
         env:
