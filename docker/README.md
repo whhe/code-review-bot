@@ -173,6 +173,39 @@ The image `ENTRYPOINT` runs bootstrap setup then `exec`s the job command. GitLab
 `GITLAB_TOKEN` and `ANTHROPIC_API_KEY` as masked CI/CD variables in that project's settings.
 Optionally set `ANTHROPIC_MODEL`.
 
+### GitHub Actions
+
+The repository includes `.github/workflows/code-review.yml`, which reviews pull requests targeting
+`main` with `whhe/code-review-bot:opencode`. Configure these values under **Settings → Secrets and
+variables → Actions** before enabling the workflow:
+
+| Type | Name | Description |
+|---|---|---|
+| Repository variable | `OPENCODE_UPSTREAM_ENDPOINT` | OpenAI-compatible API base URL |
+| Repository variable | `OPENCODE_MODEL` | Upstream model ID |
+| Repository secret | `OPENCODE_UPSTREAM_API_KEY` | Upstream API credential |
+
+The workflow sets `AUTO_APPROVE_ON_CLEAN_REVIEW=true` and `LOG_LEVEL=DEBUG`. Under **Settings →
+Actions → General → Workflow permissions**, enable **Allow GitHub Actions to create and approve
+pull requests** so clean reviews can be approved with the built-in `GITHUB_TOKEN`.
+
+The workflow runs for opened, updated, reopened, and ready-for-review pull requests. It uses the
+built-in `GITHUB_TOKEN` with `contents: read` and `pull-requests: write`. The workflow itself does
+not check out or directly execute the pull-request branch, and it skips draft and fork pull
+requests. Fork pull requests are skipped because GitHub does not expose repository secrets to
+their `pull_request` workflows; branches inside the repository should therefore be limited to
+trusted collaborators. Dependabot pull requests are not skipped, but GitHub supplies Dependabot
+secrets instead of Actions secrets and gives the built-in `GITHUB_TOKEN` read-only permissions for
+those runs. To review them, add these values under **Settings → Secrets and variables →
+Dependabot**:
+
+| Name | Description |
+|---|---|
+| `OPENCODE_UPSTREAM_API_KEY` | The same upstream API credential used by regular reviews |
+| `CODE_REVIEW_GITHUB_TOKEN` | Fine-grained token limited to this repository, with Contents read and Pull requests write permissions |
+
+Regular pull requests use the built-in `GITHUB_TOKEN` when `CODE_REVIEW_GITHUB_TOKEN` is absent.
+
 ### Other platforms
 
 Adapt the example above to your platform's workflow syntax. Any CI environment that can run a

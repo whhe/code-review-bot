@@ -1,0 +1,64 @@
+name: Code review
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+concurrency:
+  group: code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: OpenCode review
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Run code review
+        env:
+          AUTO_APPROVE_ON_CLEAN_REVIEW: "true"
+          GIT_PLATFORM_TYPE: github
+          GIT_REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          GIT_REPO_TOKEN: ${{ secrets.CODE_REVIEW_GITHUB_TOKEN || github.token }}
+          LOG_LEVEL: DEBUG
+          OPENCODE_UPSTREAM_ENDPOINT: ${{ vars.OPENCODE_UPSTREAM_ENDPOINT }}
+          OPENCODE_UPSTREAM_API_KEY: ${{ secrets.OPENCODE_UPSTREAM_API_KEY }}
+          OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
+        run: |
+          set -euo pipefail
+
+          for name in \
+            OPENCODE_UPSTREAM_ENDPOINT \
+            OPENCODE_UPSTREAM_API_KEY \
+            OPENCODE_MODEL
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing GitHub Actions configuration: ${name}"
+              exit 1
+            fi
+          done
+
+          docker run --rm \
+            -e AUTO_APPROVE_ON_CLEAN_REVIEW \
+            -e GIT_PLATFORM_TYPE \
+            -e GIT_REPO_URL \
+            -e GIT_REPO_TOKEN \
+            -e LOG_LEVEL \
+            -e OPENCODE_UPSTREAM_ENDPOINT \
+            -e OPENCODE_UPSTREAM_API_KEY \
+            -e OPENCODE_MODEL \
+            whhe/code-review-bot:opencode \
+            --cr-id "${{ github.event.pull_request.number }}"
