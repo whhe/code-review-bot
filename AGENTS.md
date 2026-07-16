@@ -38,7 +38,7 @@ src/code_review_bot/
 │   ├── models.py           # ReviewTaskContext, ReviewOutcome
 │   └── publish/
 │       ├── protocol.py     # ReviewPublisher protocol
-│       ├── platform.py     # posts inline comments + summary note to the git platform
+│       ├── platform.py     # posts inline comments + summary to the git platform
 │       └── debug.py        # writes Markdown report to disk (--debug mode)
 ├── skill/
 │   ├── protocol.py         # ReviewSkill protocol; Finding and SkillResult pydantic models
@@ -63,22 +63,28 @@ src/code_review_bot/
    prior review's stored metadata. All inline comment threads (resolved and open) are included in
    the prompt via `<inline_threads>`; the agent applies the embedded rules to decide whether to
    re-report each one.
-5. `ReviewPublisher.publish()` posts inline diff comments and a summary note, storing the new
-   fingerprint set in a hidden metadata comment for the next run.
+5. `ReviewPublisher.publish()` posts inline diff comments and formats the summary, storing the new
+   fingerprint set in hidden metadata for the next run. GitLab and GitHub without automatic
+   approval post it as a note; GitHub with automatic approval defers it to the final review body.
 6. When `AUTO_APPROVE_ON_CLEAN_REVIEW=true` (and not in `--debug` mode), the orchestrator
    approves the change request if no new findings were published, or revokes approval when new
-   findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review).
+   findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review
+   containing the full summary). If the GitHub review cannot be submitted, the summary falls back
+   to an issue comment.
    When `AUTO_APPROVE_IGNORE_LOW_SEVERITY=true`, low-severity findings are excluded from this
    decision: a review with only low-severity findings is still treated as clean.
 
 ## Key protocols
 
-All three are `typing.Protocol` — swap an implementation by updating the corresponding factory.
+The core interfaces are `typing.Protocol` types; swap an implementation by updating the
+corresponding factory. `ReviewBodyApprovalAdapter` is an optional runtime-checkable capability used
+to consolidate a GitHub summary into the final review decision.
 
 | Protocol | Module | Factory |
 |---|---|---|
 | `CodingAgent` | `agent/protocol.py` | `agent/factory.py` — `build_coding_agent()` |
 | `PlatformAdapter` | `platforms/protocol.py` | `platforms/factory.py` — `build_platform_adapter()` |
+| `ReviewBodyApprovalAdapter` | `platforms/protocol.py` | implemented by the GitHub adapter |
 | `ReviewPublisher` | `review/publish/protocol.py` | instantiated in `orchestrator.py` |
 
 ## Extension points
@@ -149,15 +155,13 @@ credential helper so tokens are never embedded in workspace URLs or Git metadata
 factory explicitly forwards only the required OpenCode runtime environment through ACP's filtered
 subprocess environment. Existing global config files are left untouched.
 
-`.github/workflows/code-review.yml` checks out the exact pull-request head, builds the shared
-Dockerfile's OpenCode target locally, and runs that development image for non-draft,
-same-repository pull requests targeting `main`; fork pull requests are skipped. Checkout does not
-persist credentials into the build context. Dependabot pull requests are allowed to run, but GitHub
-does not provide Actions secrets and grants the built-in `GITHUB_TOKEN` read-only permissions for
-those runs. The workflow therefore prefers an optional `CODE_REVIEW_GITHUB_TOKEN` secret and falls
-back to the built-in token; Dependabot reviews require same-named Dependabot secrets for that
-write-capable token and `OPENCODE_UPSTREAM_API_KEY`. The workflow uses repository variables for
-`OPENCODE_UPSTREAM_ENDPOINT` and `OPENCODE_MODEL`.
+`.github/workflows/code-review.yml` runs `whhe/code-review-bot:opencode` for non-draft,
+same-repository pull requests targeting `main` and skips fork pull requests. Dependabot pull
+requests are allowed to run, but GitHub does not provide Actions secrets and grants the built-in
+`GITHUB_TOKEN` read-only permissions for those runs. The workflow therefore prefers an optional
+`CODE_REVIEW_GITHUB_TOKEN` secret and falls back to the built-in token; Dependabot reviews require
+same-named Dependabot secrets for that write-capable token and `OPENCODE_UPSTREAM_API_KEY`. The
+workflow uses repository variables for `OPENCODE_UPSTREAM_ENDPOINT` and `OPENCODE_MODEL`.
 It enables clean-review approval with `AUTO_APPROVE_ON_CLEAN_REVIEW=true` and debug logging with
 `LOG_LEVEL=DEBUG`; the repository must allow GitHub Actions to create and approve pull requests for
 the built-in token to approve a clean review.

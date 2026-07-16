@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import cast
 
 from code_review_bot.agent.factory import build_coding_agent
 from code_review_bot.config import Settings
@@ -9,7 +10,7 @@ from code_review_bot.logging_config import (
     detach_review_session_logging,
 )
 from code_review_bot.platforms.models import ChangeRequest
-from code_review_bot.platforms.protocol import PlatformAdapter
+from code_review_bot.platforms.protocol import PlatformAdapter, ReviewBodyApprovalAdapter
 from code_review_bot.repo.manager import RepoManager
 from code_review_bot.review.context import (
     compute_fingerprint,
@@ -153,14 +154,34 @@ class ReviewOrchestrator:
                 len(new_findings),
             )
 
-            outcome = await self.publisher.publish(
-                cr,
-                result,
-                skill.name,
-                skill.version,
-                sorted(fingerprints),
-                existing_notes=notes,
+            consolidate_github_review = (
+                self._platform_publish
+                and self.adapter.platform_name == "github"
+                and isinstance(self.adapter, ReviewBodyApprovalAdapter)
+                and self.settings.auto_approve_on_clean_review
+                and cr.is_open
+                and not cr.draft
             )
+            if self._platform_publish:
+                platform_publisher = cast(PlatformPublisher, self.publisher)
+                outcome = await platform_publisher.publish(
+                    cr,
+                    result,
+                    skill.name,
+                    skill.version,
+                    sorted(fingerprints),
+                    existing_notes=notes,
+                    publish_summary=not consolidate_github_review,
+                )
+            else:
+                outcome = await self.publisher.publish(
+                    cr,
+                    result,
+                    skill.name,
+                    skill.version,
+                    sorted(fingerprints),
+                    existing_notes=notes,
+                )
             approval_count = len(new_findings)
             if self.settings.auto_approve_ignore_low_severity:
                 non_low = [f for f in new_findings if f.severity != "low"]
@@ -171,7 +192,14 @@ class ReviewOrchestrator:
                         len(non_low),
                     )
                 approval_count = len(non_low)
-            approved = await self._maybe_update_approval(cr, resolved_ref, approval_count)
+            approved = await self._maybe_update_approval(
+                cr,
+                resolved_ref,
+                approval_count,
+                review_body=outcome.review_body if consolidate_github_review else "",
+            )
+            if consolidate_github_review and approved is None:
+                await self.adapter.publish_summary(resolved_ref, cr.cr_id, outcome.review_body)
             outcome = outcome.model_copy(update={"approved": approved})
             logger.info(
                 "Published summary=%r published=%s inline_comments=%s approved=%s",
@@ -199,6 +227,7 @@ class ReviewOrchestrator:
         cr: ChangeRequest,
         project_ref: str,
         new_findings_count: int,
+        review_body: str = "",
     ) -> bool | None:
         if not self.settings.auto_approve_on_clean_review:
             return None
@@ -217,7 +246,12 @@ class ReviewOrchestrator:
                         cr.cr_id,
                     )
                     return None
-                await self.adapter.approve_change_request(project_ref, cr.cr_id, head_sha)
+                if review_body and isinstance(self.adapter, ReviewBodyApprovalAdapter):
+                    await self.adapter.approve_change_request_with_body(
+                        project_ref, cr.cr_id, head_sha, body=review_body
+                    )
+                else:
+                    await self.adapter.approve_change_request(project_ref, cr.cr_id, head_sha)
                 logger.info(
                     "Approved change request project_ref=%s cr_id=%s head_sha=%s",
                     project_ref,
@@ -225,7 +259,12 @@ class ReviewOrchestrator:
                     head_sha[:12] + "…" if len(head_sha) > 12 else head_sha,
                 )
                 return True
-            await self.adapter.revoke_change_request_approval(project_ref, cr.cr_id, head_sha)
+            if review_body and isinstance(self.adapter, ReviewBodyApprovalAdapter):
+                await self.adapter.revoke_change_request_approval_with_body(
+                    project_ref, cr.cr_id, head_sha, body=review_body
+                )
+            else:
+                await self.adapter.revoke_change_request_approval(project_ref, cr.cr_id, head_sha)
             logger.info(
                 "Revoked approval project_ref=%s cr_id=%s new_findings=%s",
                 project_ref,

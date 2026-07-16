@@ -27,7 +27,12 @@ class GitHubAdapter:
 
     async def list_notes(self, project_ref: str, cr_id: str) -> list[dict[str, object]]:
         owner, repo = _split_project_ref(project_ref)
-        return await self._client.list_issue_comments(owner, repo, int(cr_id))
+        issue_comments = await self._client.list_issue_comments(owner, repo, int(cr_id))
+        reviews = await self._client.list_pull_reviews(owner, repo, int(cr_id))
+        return sorted(
+            [*issue_comments, *reviews],
+            key=lambda note: str(note.get("submitted_at") or note.get("created_at") or ""),
+        )
 
     async def list_inline_threads(self, project_ref: str, cr_id: str) -> list[InlineThread]:
         owner, repo = _split_project_ref(project_ref)
@@ -82,8 +87,29 @@ class GitHubAdapter:
         owner, repo = _split_project_ref(project_ref)
         return await self._client.create_pull_review(owner, repo, int(cr_id), "APPROVE", head_sha)
 
+    async def approve_change_request_with_body(
+        self, project_ref: str, cr_id: str, head_sha: str, body: str
+    ) -> dict[str, object]:
+        owner, repo = _split_project_ref(project_ref)
+        return await self._client.create_pull_review(
+            owner, repo, int(cr_id), "APPROVE", head_sha, body=body
+        )
+
     async def revoke_change_request_approval(
-        self, project_ref: str, cr_id: str, head_sha: str = ""
+        self,
+        project_ref: str,
+        cr_id: str,
+        head_sha: str = "",
+    ) -> dict[str, object]:
+        return await self.revoke_change_request_approval_with_body(
+            project_ref,
+            cr_id,
+            head_sha,
+            body="Code review found new issues.",
+        )
+
+    async def revoke_change_request_approval_with_body(
+        self, project_ref: str, cr_id: str, head_sha: str, body: str
     ) -> dict[str, object]:
         owner, repo = _split_project_ref(project_ref)
         if not head_sha:
@@ -95,7 +121,7 @@ class GitHubAdapter:
             int(cr_id),
             "REQUEST_CHANGES",
             head_sha,
-            body="Code review found new issues.",
+            body=body,
         )
 
 

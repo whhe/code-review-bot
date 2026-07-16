@@ -130,6 +130,25 @@ async def test_publisher_always_creates_summary_note() -> None:
 
 
 @pytest.mark.asyncio
+async def test_publisher_can_defer_summary_to_platform_review() -> None:
+    adapter = FakeAdapter()
+    publisher = PlatformPublisher(adapter)
+
+    outcome = await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=[]),
+        skill_name="default",
+        skill_version="1",
+        fingerprints=["fp1"],
+        publish_summary=False,
+    )
+
+    assert adapter.summaries_posted == []
+    assert "Reviewed" in outcome.review_body
+    assert BOT_METADATA_PREFIX in outcome.review_body
+
+
+@pytest.mark.asyncio
 async def test_formatter_includes_metadata_for_incremental_dedupe() -> None:
     body = format_review_note(
         cr=make_change_request(),

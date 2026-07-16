@@ -44,6 +44,24 @@ class GitHubClient:
         response.raise_for_status()
         return list(response.json())
 
+    async def list_pull_reviews(
+        self, owner: str, repo: str, pr_number: int
+    ) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        page = 1
+        while True:
+            response = await self._client.get(
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            batch = response.json()
+            items.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return items
+
     async def list_pull_review_comments(
         self, owner: str, repo: str, pr_number: int
     ) -> list[dict[str, object]]:

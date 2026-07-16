@@ -27,20 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Check out pull request source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - name: Build review image
-        run: >-
-          docker build
-          --file docker/Dockerfile
-          --target opencode
-          --tag code-review-bot:pr-head
-          .
-
       - name: Run code review
         env:
           AUTO_APPROVE_ON_CLEAN_REVIEW: "true"
@@ -74,5 +60,5 @@ jobs:
             -e OPENCODE_UPSTREAM_ENDPOINT \
             -e OPENCODE_UPSTREAM_API_KEY \
             -e OPENCODE_MODEL \
-            code-review-bot:pr-head \
+            whhe/code-review-bot:opencode \
             --cr-id "${{ github.event.pull_request.number }}"
