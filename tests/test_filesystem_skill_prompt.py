@@ -83,6 +83,10 @@ def test_filesystem_skill_prompt_contains_workspace_and_refs(sample_skill_dir: P
     assert "main" in prompt
     assert "base123" in prompt
     assert "head123" in prompt
+    assert "target branch checked out" in prompt
+    assert "refs/code-review/target...refs/code-review/source" in prompt
+    assert "show refs/code-review/source:<path>" in prompt
+    assert "source branch checked out" not in prompt
 
 
 def test_filesystem_skill_prompt_contains_skill_dir(sample_skill_dir: Path) -> None:

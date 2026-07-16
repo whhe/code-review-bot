@@ -59,7 +59,7 @@ npx skills add whhe/ai-workshop --skill code-review --global --yes
 # installs to ~/.agents/skills/code-review — already the default in .env.example
 ```
 
-Built-in `ACP_AGENT_TYPE` values (`claude`, `codex`) wire the launcher in code — leave
+Built-in `ACP_AGENT_TYPE` values (`claude`, `codex`, `opencode`) wire the launcher in code — leave
 `ACP_COMMAND` and `ACP_ARGS` unset. Any other type name requires both.
 
 ### 3. Run a review locally
@@ -97,7 +97,7 @@ See `.env.example` for the full list with descriptions.
 | `GIT_REPO_TOKEN` | yes | — | Access token with repo read permission and comment-posting rights |
 | `GIT_PLATFORM_URL` | no | derived | API base override. GitLab: sub-path host (e.g. `https://example.com/gitlab`). GitHub: GHES REST root (e.g. `https://github.corp.example.com/api/v3`) when auto-derivation is wrong. GitHub.com needs no override (`api.github.com` is derived from `github.com` clone URLs). |
 | `CLONE_BASE_DIR` | no | system temp | Parent directory for per-review git workspaces |
-| `CLONE_DEPTH` | no | `0` | Shallow clone depth (`0` = full history) |
+| `CLONE_DEPTH` | no | `0` | Initial shallow clone depth (`0` = full history); missing merge-base history is fetched automatically |
 
 ### Review
 
@@ -114,12 +114,22 @@ See `.env.example` for the full list with descriptions.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `ACP_AGENT_TYPE` | no | `claude` | Built-in: `claude`, `codex` (launcher in code). Other values require `ACP_COMMAND` + `ACP_ARGS` |
+| `ACP_AGENT_TYPE` | no | `claude` | Built-in: `claude`, `codex`, `opencode` (launcher in code). Other values require `ACP_COMMAND` + `ACP_ARGS` |
 | `ACP_COMMAND` | when not built-in | from preset | Subprocess executable; required for custom `ACP_AGENT_TYPE` |
 | `ACP_ARGS` | when not built-in | from preset | JSON argv after command; required for custom `ACP_AGENT_TYPE` |
-| `ACP_MODEL` | no | agent default | Model override passed to the ACP agent subprocess |
+| `ACP_MODEL` | no | agent default | Model override. Claude receives it through `ANTHROPIC_MODEL`; Codex uses the ACP `model` config option; OpenCode receives the full `provider/model` ID through ACP session model selection. |
 | `ACP_VERBOSE` | no | `true` | Log ACP input prompts, tool calls, and streamed agent messages |
 | `ACP_STREAM_LIMIT` | no | `10485760` (10 MB) | Max bytes for one ACP newline-delimited JSON frame |
+
+The review workspace checks out the target branch. Each ACP agent therefore discovers project
+instructions and configuration through its own native rules, without the bot maintaining a list
+of recognized files. The source branch is retained only as `refs/code-review/source` and is
+reviewed against `refs/code-review/target` with read-only Git commands. When the platform supplies
+diff commit SHAs, both refs are pinned to that exact change-request version instead of later branch
+tips. Source-branch changes remain fully reviewable but are never placed in the working tree, so
+they cannot become active project configuration for the current review. Clone and fetch
+credentials are supplied only to their Git subprocesses through an ephemeral credential helper;
+they are never embedded in workspace Git URLs.
 
 ### Logging
 

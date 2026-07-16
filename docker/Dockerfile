@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
 # Optional build-time mirrors:
 #   --build-arg APT_MIRROR=mirrors.aliyun.com
@@ -9,7 +9,7 @@ ARG APT_MIRROR
 ARG PIP_INDEX_URL
 ARG NPM_CONFIG_REGISTRY
 
-# Install git, curl, and Node.js 20.x (required for Claude Code ACP via npx).
+# Install shared runtime dependencies for both coding-agent images.
 RUN if [ -n "$APT_MIRROR" ]; then \
         for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do \
             [ -f "$f" ] || continue; \
@@ -23,17 +23,14 @@ RUN if [ -n "$APT_MIRROR" ]; then \
         ca-certificates \
         curl \
         gnupg \
+        ripgrep \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code ACP globally so it is accessible to all users.
-RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi \
-    && npm install -g @zed-industries/claude-agent-acp
-
 WORKDIR /app
 
-# Separate layer so source edits don't bust the npm warm-up cache below.
+# Install the application before specializing the final image by coding agent.
 COPY pyproject.toml ./
 COPY src/ ./src/
 RUN if [ -n "$PIP_INDEX_URL" ]; then \
@@ -67,3 +64,25 @@ ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY} \
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["code-review-bot", "--help"]
+
+# Keep OpenCode before Claude so a build without --target retains the historical Claude default.
+FROM base AS opencode
+USER root
+ARG NPM_CONFIG_REGISTRY
+RUN set -eu; \
+    if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi; \
+    npm install -g opencode-ai; \
+    npm list -g --depth=0
+USER appuser
+ENV ACP_AGENT_TYPE=opencode \
+    OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=65536
+
+FROM base AS claude
+USER root
+ARG NPM_CONFIG_REGISTRY
+RUN set -eu; \
+    if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi; \
+    npm install -g @zed-industries/claude-agent-acp; \
+    npm list -g --depth=0
+USER appuser
+ENV ACP_AGENT_TYPE=claude

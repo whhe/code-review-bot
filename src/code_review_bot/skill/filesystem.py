@@ -1,6 +1,8 @@
 import hashlib
 from pathlib import Path
 
+from code_review_bot.repo.manager import REVIEW_SOURCE_REF, REVIEW_TARGET_REF
+
 _MAX_SKILL_MD_BYTES = 512_000
 _MAX_DESCRIPTION_CHARS = 3000
 
@@ -123,7 +125,7 @@ def build_review_prompt(
     context must have the following attributes:
         change_request  - ChangeRequest with title, cr_id, source_branch,
                           target_branch, description, author, state, web_url
-        workspace_path  - str, absolute path to the checked-out source branch
+        workspace_path  - str, absolute path to the checked-out target branch
         source_branch   - str
         target_branch   - str
         base_sha        - str
@@ -200,16 +202,23 @@ def build_review_prompt(
         "# Task\n"
         f"Review the merge request **!{cr.cr_id} {cr.title}**.\n\n"
         "## Local workspace\n"
-        f"- Local clone (source branch checked out): `{workspace_path}`\n"
+        f"- Local clone (target branch checked out): `{workspace_path}`\n"
         f"- source_branch: `{context.source_branch}`\n"  # type: ignore[attr-defined]
         f"- target_branch: `{context.target_branch}`\n"  # type: ignore[attr-defined]
+        f"- source ref: `{REVIEW_SOURCE_REF}`\n"
+        f"- target ref: `{REVIEW_TARGET_REF}`\n"
         f"- base_sha: `{base_sha}`\n"
         f"- start_sha: `{context.start_sha}`\n"  # type: ignore[attr-defined]
         f"- head_sha: `{head_sha}`\n"
         f"- previous_reviewed_head: `{previous_head}`\n\n"
-        "Use `git diff` in the workspace to identify changed lines. "
-        "For a full diff, run:\n"
-        f"  `git -C {workspace_path} diff {base_sha} {head_sha}`\n\n"
+        "The working tree intentionally contains the target branch so your native project "
+        "instructions and configuration are discovered from trusted target content. "
+        "The source branch is available only through its Git ref.\n"
+        "Use these read-only commands to review it:\n"
+        f"- full diff: `git -C {workspace_path} diff "
+        f"{REVIEW_TARGET_REF}...{REVIEW_SOURCE_REF}`\n"
+        f"- source file: `git -C {workspace_path} show {REVIEW_SOURCE_REF}:<path>`\n"
+        "Do not checkout, switch, reset, or otherwise place the source ref in the working tree.\n\n"
         "**IMPORTANT — read-only**: Do NOT modify any files, commit, push, or publish "
         "comments. Only read files and run read-only git commands.\n\n"
         f"{filter_section}"

@@ -104,15 +104,6 @@ def test_settings_project_path_respects_platform_url_override(
     assert settings.git_project_path == "group/project"
 
 
-def test_settings_repo_clone_url_injects_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GIT_REPO_URL", "https://gitlab.test/group/project.git")
-    monkeypatch.setenv("GIT_REPO_TOKEN", "mytoken")
-    from code_review_bot.config import Settings
-
-    settings = Settings()
-    assert settings.repo_clone_url == "https://oauth2:mytoken@gitlab.test/group/project.git"
-
-
 def test_settings_acp_agent_type_defaults_to_claude(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ACP_AGENT_TYPE", raising=False)
     monkeypatch.delenv("ACP_COMMAND", raising=False)
@@ -134,6 +125,18 @@ def test_settings_acp_agent_type_codex_launcher(monkeypatch: pytest.MonkeyPatch)
     settings = Settings(_env_file=None)
     assert settings.acp_agent_type == "codex"
     assert settings.resolved_acp_args == ["-y", "@zed-industries/codex-acp"]
+
+
+def test_settings_acp_agent_type_opencode_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACP_AGENT_TYPE", "opencode")
+    monkeypatch.delenv("ACP_COMMAND", raising=False)
+    monkeypatch.delenv("ACP_ARGS", raising=False)
+    from code_review_bot.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.acp_agent_type == "opencode"
+    assert settings.resolved_acp_command == "opencode"
+    assert settings.resolved_acp_args == ["acp"]
 
 
 def test_settings_acp_command_and_args_override(monkeypatch: pytest.MonkeyPatch) -> None:

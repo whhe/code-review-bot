@@ -55,7 +55,7 @@ class ReviewOrchestrator:
 
         adapter = build_platform_adapter(settings)
         repo_manager = RepoManager(
-            clone_url=settings.repo_clone_url,
+            clone_url=settings.git_repo_url,
             token=settings.git_repo_token,
             review_base_dir=settings.clone_base_dir,
             clone_depth=settings.clone_depth,
@@ -99,8 +99,14 @@ class ReviewOrchestrator:
             )
             previous_metadata = extract_metadata(notes)
 
+            source_sha = cr.diff_refs.get("head_sha") or cr.head_sha
+            target_sha = cr.diff_refs.get("start_sha") or cr.diff_refs.get("base_sha", "")
             review_workspace = await self.repo_manager.make_review_workspace(
-                cr.source_branch, cr.target_branch, head_repo_url=cr.head_repo_url
+                cr.source_branch,
+                cr.target_branch,
+                head_repo_url=cr.head_repo_url,
+                source_sha=source_sha,
+                target_sha=target_sha,
             )
             logger.info("Local review workspace ready at %s", review_workspace)
 

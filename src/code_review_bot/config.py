@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     acp_agent_type: str = Field(
         default="claude",
         description=(
-            "Built-in: claude, codex (launcher from presets; omit ACP_COMMAND/ACP_ARGS). "
-            "Any other value requires ACP_COMMAND and ACP_ARGS."
+            "Built-in: claude, codex, opencode (launcher from presets; omit "
+            "ACP_COMMAND/ACP_ARGS). Any other value requires ACP_COMMAND and ACP_ARGS."
         ),
     )
     acp_command: str | None = Field(
@@ -204,13 +204,6 @@ class Settings(BaseSettings):
         return _github_graphql_url(self.github_rest_api_base)
 
     @property
-    def repo_clone_url(self) -> str:
-        """Clone URL with the repo token injected as HTTP basic auth."""
-        if not self.git_repo_url or not self.git_repo_token:
-            return self.git_repo_url
-        return _inject_https_token(self.git_repo_url, self.git_repo_token)
-
-    @property
     def review_session_log_dir(self) -> str:
         """Subdir under log_dir for per-review session logs; empty disables it."""
         return self._log_subdir("sessions")
@@ -291,12 +284,3 @@ def _strip_git_suffix(path: str) -> str:
     if path.endswith(".git"):
         path = path[:-4]
     return path
-
-
-def _inject_https_token(url: str, token: str) -> str:
-    if "://" not in url:
-        return url
-    protocol, rest = url.split("://", 1)
-    if "@" in rest:
-        rest = rest.split("@", 1)[1]
-    return f"{protocol}://oauth2:{token}@{rest}"

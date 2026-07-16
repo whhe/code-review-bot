@@ -2,13 +2,14 @@
 
 from typing import Literal
 
-BuiltinAcpAgentType = Literal["claude", "codex"]
+BuiltinAcpAgentType = Literal["claude", "codex", "opencode"]
 
-BUILTIN_ACP_AGENT_TYPES: frozenset[str] = frozenset({"claude", "codex"})
+BUILTIN_ACP_AGENT_TYPES: frozenset[str] = frozenset({"claude", "codex", "opencode"})
 
 ACP_PRESETS: dict[BuiltinAcpAgentType, tuple[str, list[str]]] = {
     "claude": ("npx", ["-y", "@zed-industries/claude-agent-acp"]),
     "codex": ("npx", ["-y", "@zed-industries/codex-acp"]),
+    "opencode": ("opencode", ["acp"]),
 }
 
 

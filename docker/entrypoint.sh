@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run Claude/bootstrap setup, then exec the container command.
+# Run coding-agent bootstrap setup, then exec the container command.
 # GitLab CI passes `sh -c '<script>'` as CMD; docker run often passes `--cr-id` only.
 set -e
 python3 /usr/local/bin/bootstrap.py

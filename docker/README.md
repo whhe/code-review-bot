@@ -5,27 +5,91 @@
 Build from the repository root:
 
 ```bash
-docker build -f docker/Dockerfile -t whhe/code-review-bot:latest .
+docker build -f docker/Dockerfile \
+  --target claude \
+  -t whhe/code-review-bot:claude-code .
+
+docker build -f docker/Dockerfile \
+  --target opencode \
+  -t whhe/code-review-bot:opencode .
 ```
 
 If PyPI, npm, or apt is slow from your network, pass mirrors at build time:
 
 ```bash
 docker build -f docker/Dockerfile \
+  --target opencode \
   --build-arg APT_MIRROR=mirrors.aliyun.com \
   --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
   --build-arg NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
-  -t whhe/code-review-bot:latest .
+  -t whhe/code-review-bot:opencode .
 ```
 
 | Build arg | Default | Description |
 |---|---|---|
 | `APT_MIRROR` | — | Debian apt mirror host (replaces `deb.debian.org` and `security.debian.org` in apt sources) |
 | `PIP_INDEX_URL` | — | PyPI mirror used during `pip install` only |
-| `NPM_CONFIG_REGISTRY` | — | npm registry for the build-time `npx` warm-up; baked into the image for runtime ACP |
+| `NPM_CONFIG_REGISTRY` | — | npm registry for build-time package installs; persisted as the image's npm registry default |
 
-`NPM_CONFIG_REGISTRY` is inherited by `npx` when the bot launches the coding agent. Override at
-run time with `-e NPM_CONFIG_REGISTRY=...` if needed.
+Select the `claude` or `opencode` target to install only that coding agent. A build without
+`--target` uses the final `claude` stage. Package versions are intentionally unpinned, so a rebuilt
+npm layer resolves the current registry version; `npm list -g --depth=0` records the resolved
+version in the build log. A cached layer retains its installed version.
+
+## Coding-agent image tags
+
+GitHub Actions builds both variants from the shared `docker/Dockerfile`:
+
+```text
+whhe/code-review-bot:claude-code
+whhe/code-review-bot:latest
+whhe/code-review-bot:opencode
+```
+
+Each target persists its matching `ACP_AGENT_TYPE`. Both variants leave `ACP_COMMAND` and
+`ACP_ARGS` unset. Built-in presets start Claude through
+`npx -y @zed-industries/claude-agent-acp` and OpenCode through `opencode acp`. Agent-specific
+Docker stages ensure Claude images do not contain OpenCode-only environment defaults.
+
+`:latest` and `:claude-code` are aliases for the same Claude image. OpenCode is published only as
+`:opencode`.
+
+## OpenCode image configuration
+
+The OpenCode image uses these variables during setup and runtime. For the generated config, the
+endpoint and API key remain required at runtime because OpenCode resolves their environment
+placeholders for every agent process. The model and context limit are read only when bootstrap
+creates the config; the output limit is used during both setup and runtime.
+
+| Variable | Required when | Default | Description |
+|---|---|---|---|
+| `OPENCODE_UPSTREAM_ENDPOINT` | runtime | — | OpenAI-compatible API base URL |
+| `OPENCODE_UPSTREAM_API_KEY` | runtime | — | OpenCode upstream API credential |
+| `OPENCODE_MODEL` | first setup | — | Upstream model ID |
+| `OPENCODE_CONTEXT_LENGTH` | first setup (optional) | `1000000` | Model context limit; must be a positive integer |
+| `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` | setup and runtime (optional) | `65536` | Model and global output limit; must be positive and smaller than the context limit |
+
+The limit defaults match `qwen3.7-max`, but `OPENCODE_MODEL` remains runtime-configurable. When
+selecting another fixed model, override both limits to match it. The generated model entry declares
+both `limit.context` and `limit.output`; the image also exports the output value through
+`OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX`.
+
+Bootstrap writes `~/.config/opencode/opencode.json` only when it does not already exist. The
+generated provider references `{env:OPENCODE_UPSTREAM_API_KEY}` instead of storing the credential,
+and the OpenCode setup path does not print the generated configuration. Mount a pre-reviewed
+configuration at that path to bypass generation. The ACP launcher forwards only the OpenCode
+endpoint, key, output limit, and npm-registry variables.
+
+The generated config does not override OpenCode's tool permissions, matching the existing Claude
+image. The shared review prompt explicitly requires a read-only review and forbids file changes,
+commits, pushes, and comment publication. This is a behavioral instruction, not a container
+security boundary.
+
+The review workspace checks out the target branch, allowing Claude Code, Codex, OpenCode, and
+future ACP agents to discover project instructions through their own native rules. The source
+branch is available only through stable Git refs pinned to the platform's change-request diff
+version and is inspected with read-only `git diff` and `git show` commands. The bot does not
+enumerate instruction or configuration file names.
 
 ## Default review skill
 
@@ -54,24 +118,24 @@ To fall back to the agent's built-in knowledge (no skill), set `REVIEW_SKILL=`.
 ## Run
 
 ```bash
-docker run --env-file .env -v ./logs:/app/logs whhe/code-review-bot:latest --cr-id <change-request-id>
+docker run --env-file .env -v ./logs:/app/logs whhe/code-review-bot:claude-code --cr-id <change-request-id>
 
 # Write a Markdown report instead of posting to the platform
-docker run --env-file .env -v ./logs:/app/logs whhe/code-review-bot:latest --cr-id <change-request-id> --debug
+docker run --env-file .env -v ./logs:/app/logs whhe/code-review-bot:claude-code --cr-id <change-request-id> --debug
 ```
 
-## Environment variables
+## Claude Code image environment variables
 
 `docker-entrypoint.sh` runs `bootstrap.py` on every container start; bootstrap writes
 `~/.claude/settings.json` from the variables below on first start only. If the file already
 exists it is left untouched.
 
-| Variable | Required | Default | Description |
+| Variable | Required when | Default | Description |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | yes (one of two) | — | Anthropic API key (mutually exclusive with `ANTHROPIC_AUTH_TOKEN`) |
-| `ANTHROPIC_AUTH_TOKEN` | yes (one of two) | — | Alternative Anthropic credential (mutually exclusive with `ANTHROPIC_API_KEY`) |
-| `ANTHROPIC_BASE_URL` | no | — | Optional Anthropic API base URL (proxy / custom endpoint) |
-| `ANTHROPIC_MODEL` | no | `claude-opus-4-6` | Written into Claude Code `settings.json` on first container start |
+| `ANTHROPIC_API_KEY` | first start (one of two) | — | Anthropic API key (mutually exclusive with `ANTHROPIC_AUTH_TOKEN`) |
+| `ANTHROPIC_AUTH_TOKEN` | first start (one of two) | — | Alternative Anthropic credential (mutually exclusive with `ANTHROPIC_API_KEY`) |
+| `ANTHROPIC_BASE_URL` | first start (optional) | — | Anthropic API base URL (proxy / custom endpoint) |
+| `ANTHROPIC_MODEL` | first start (optional) | `claude-opus-4-6` | Written into Claude Code `settings.json` |
 
 All other bot settings (`GIT_REPO_URL`, `GIT_REPO_TOKEN`, `REVIEW_SKILL`, etc.) are read from the
 same env file — see the [configuration reference](../README.md#configuration) in the root README.
@@ -88,7 +152,7 @@ and passes `$CI_MERGE_REQUEST_IID` as `--cr-id`:
 
 ```yaml
 code-review:
-  image: whhe/code-review-bot:latest
+  image: whhe/code-review-bot:claude-code
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   variables:

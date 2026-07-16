@@ -377,6 +377,24 @@ async def test_ignore_low_approves_when_only_low_findings() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_pins_workspace_to_change_request_diff_refs() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="ok", findings=[])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    orchestrator.repo_manager.make_review_workspace.assert_awaited_once_with(
+        "feature",
+        "main",
+        head_repo_url="",
+        source_sha="headsha",
+        target_sha="start",
+    )
+
+
+@pytest.mark.asyncio
 async def test_ignore_low_revokes_when_non_low_findings_exist() -> None:
     adapter = ApprovalTrackingAdapter()
     orchestrator = _make_orchestrator_ignore_low(adapter)

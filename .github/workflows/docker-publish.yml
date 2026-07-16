@@ -7,9 +7,18 @@ on:
 
 jobs:
   docker:
+    name: Build ${{ matrix.tag }} image
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - agent_type: claude
+            tag: claude-code
+          - agent_type: opencode
+            tag: opencode
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,15 +36,24 @@ jobs:
         id: sha
         run: echo "value=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/code-review-bot
+          tags: |
+            type=raw,value=${{ matrix.tag }}
+            type=raw,value=latest,enable=${{ matrix.agent_type == 'claude' }}
+            type=raw,value=${{ steps.sha.outputs.value }},enable=${{ matrix.agent_type == 'claude' }}
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
+          target: ${{ matrix.agent_type }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/code-review-bot:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/code-review-bot:${{ steps.sha.outputs.value }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.tag }}

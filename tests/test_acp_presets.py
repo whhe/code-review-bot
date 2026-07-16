@@ -17,6 +17,14 @@ def test_builtin_uses_preset() -> None:
     assert args == ["-y", "@zed-industries/codex-acp"]
 
 
+def test_opencode_is_builtin_and_uses_native_acp() -> None:
+    assert is_builtin_acp_agent_type("opencode")
+
+    command, args = resolve_acp_launcher("opencode")
+    assert command == "opencode"
+    assert args == ["acp"]
+
+
 def test_builtin_optional_override() -> None:
     command, args = resolve_acp_launcher("claude", command="custom", args=["x"])
     assert command == "custom"

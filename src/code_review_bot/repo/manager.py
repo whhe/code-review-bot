@@ -8,6 +8,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_GIT_CREDENTIAL_HELPER = (
+    '!f() { test "$1" = get || exit 0; '
+    'printf "%s\\n" "username=oauth2" "password=$CODE_REVIEW_BOT_GIT_TOKEN"; }; f'
+)
+REVIEW_SOURCE_REF = "refs/code-review/source"
+REVIEW_TARGET_REF = "refs/code-review/target"
+
 
 def _scrub_clone_url(url: str) -> str:
     """Replace embedded credentials in a git URL with a placeholder."""
@@ -18,12 +25,21 @@ def _scrub_clone_url(url: str) -> str:
     return f"{scheme}://<credentials>@{host_path}"
 
 
+def _strip_clone_url_credentials(url: str) -> str:
+    """Return a clone URL that is safe to persist in a workspace git config."""
+    if "://" not in url or "@" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    _, host_path = rest.rsplit("@", 1)
+    return f"{scheme}://{host_path}"
+
+
 class RepoManager:
     """Manages temporary git clones for individual review runs.
 
-    Each review gets an isolated workspace cloned from the remote over HTTPS
-    with the platform token injected into the URL. The workspace is deleted
-    after the review completes, regardless of outcome.
+    Each review gets an isolated target-branch workspace plus stable source and
+    target refs. Credentials are supplied through an ephemeral Git credential
+    helper. The workspace is deleted after review, regardless of outcome.
     """
 
     def __init__(
@@ -34,42 +50,84 @@ class RepoManager:
         review_base_dir: str | Path | None = None,
         clone_depth: int = 0,
     ) -> None:
-        self.clone_url = clone_url
+        self.clone_url = _strip_clone_url_credentials(clone_url)
         self.token = token
         self.review_base_dir = Path(review_base_dir) if review_base_dir else None
         self.clone_depth = clone_depth
 
-    def _inject_token(self, url: str) -> str:
-        """Inject the stored token into an HTTPS URL using oauth2 basic auth."""
-        if not self.token or "://" not in url:
-            return url
-        scheme, rest = url.split("://", 1)
-        if "@" in rest:
-            rest = rest.split("@", 1)[1]
-        return f"{scheme}://oauth2:{self.token}@{rest}"
-
     async def make_review_workspace(
-        self, source_branch: str, target_branch: str, *, head_repo_url: str = ""
+        self,
+        source_branch: str,
+        target_branch: str,
+        *,
+        head_repo_url: str = "",
+        source_sha: str = "",
+        target_sha: str = "",
     ) -> Path:
         return await asyncio.to_thread(
-            self._make_review_workspace_sync, source_branch, target_branch, head_repo_url
+            self._make_review_workspace_sync,
+            source_branch,
+            target_branch,
+            head_repo_url,
+            source_sha,
+            target_sha,
         )
 
     def _make_review_workspace_sync(
-        self, source_branch: str, target_branch: str, head_repo_url: str = ""
+        self,
+        source_branch: str,
+        target_branch: str,
+        head_repo_url: str = "",
+        source_sha: str = "",
+        target_sha: str = "",
     ) -> Path:
         if self.review_base_dir:
             self.review_base_dir.mkdir(parents=True, exist_ok=True)
         root = Path(tempfile.mkdtemp(prefix="code-review-", dir=self.review_base_dir))
         source_dir = root / "source"
-        clone_source = self._inject_token(head_repo_url) if head_repo_url else self.clone_url
+        clone_source = (
+            _strip_clone_url_credentials(head_repo_url) if head_repo_url else self.clone_url
+        )
         try:
             self._clone_ref(clone_source, source_branch, source_dir)
+            try:
+                self._update_ref(source_dir, REVIEW_SOURCE_REF, source_sha or "HEAD")
+            except subprocess.CalledProcessError:
+                if self.clone_depth <= 0:
+                    raise
+                self._unshallow_ref(source_dir, clone_source, source_branch)
+                self._update_ref(source_dir, REVIEW_SOURCE_REF, source_sha or "HEAD")
             self._fetch_ref(
                 source_dir,
                 self.clone_url,
                 target_branch,
-                f"refs/remotes/origin/{target_branch}",
+                REVIEW_TARGET_REF,
+            )
+            try:
+                if target_sha:
+                    self._update_ref(source_dir, REVIEW_TARGET_REF, target_sha)
+                self._verify_merge_base(source_dir)
+            except subprocess.CalledProcessError:
+                if self.clone_depth <= 0:
+                    raise
+                self._complete_shallow_history(
+                    source_dir,
+                    clone_source,
+                    source_branch,
+                    target_branch,
+                )
+                self._update_ref(source_dir, REVIEW_SOURCE_REF, source_sha or "HEAD")
+                if target_sha:
+                    self._update_ref(source_dir, REVIEW_TARGET_REF, target_sha)
+                self._verify_merge_base(source_dir)
+            self._run(
+                self._git_command(
+                    "-C",
+                    str(source_dir),
+                    "checkout",
+                    "--detach",
+                    REVIEW_TARGET_REF,
+                )
             )
         except (OSError, subprocess.CalledProcessError):
             shutil.rmtree(root, ignore_errors=True)
@@ -80,7 +138,7 @@ class RepoManager:
         shutil.rmtree(root, ignore_errors=True)
 
     def _clone_ref(self, url: str, branch: str, destination: Path) -> None:
-        command = ["git", "clone"]
+        command = self._git_command("clone", "--no-checkout")
         if self.clone_depth > 0:
             command.extend(["--depth", str(self.clone_depth)])
         command.extend(["--branch", branch, "--single-branch", url, str(destination)])
@@ -90,11 +148,73 @@ class RepoManager:
         self, repo: Path, remote_url: str, ref: str, destination_ref: str | None = None
     ) -> None:
         refspec = f"{ref}:{destination_ref}" if destination_ref else ref
-        command = ["git", "-C", str(repo), "fetch"]
+        command = self._git_command("-C", str(repo), "fetch")
         if self.clone_depth > 0:
             command.extend(["--depth", str(self.clone_depth)])
         command.extend([remote_url, refspec])
         self._run(command)
+
+    def _git_command(self, *args: str) -> list[str]:
+        command = ["git"]
+        if self.token:
+            command.extend(
+                [
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    f"credential.helper={_GIT_CREDENTIAL_HELPER}",
+                ]
+            )
+        command.extend(args)
+        return command
+
+    def _update_ref(self, repo: Path, ref: str, revision: str) -> None:
+        self._run(self._git_command("-C", str(repo), "update-ref", ref, revision))
+
+    def _verify_merge_base(self, repo: Path) -> None:
+        self._run(
+            self._git_command(
+                "-C",
+                str(repo),
+                "merge-base",
+                REVIEW_TARGET_REF,
+                REVIEW_SOURCE_REF,
+            )
+        )
+
+    def _complete_shallow_history(
+        self,
+        repo: Path,
+        source_url: str,
+        source_branch: str,
+        target_branch: str,
+    ) -> None:
+        for remote_url, branch in (
+            (source_url, source_branch),
+            (self.clone_url, target_branch),
+        ):
+            if not self._is_shallow(repo):
+                return
+            self._unshallow_ref(repo, remote_url, branch)
+
+    def _is_shallow(self, repo: Path) -> bool:
+        result = self._run(
+            self._git_command("-C", str(repo), "rev-parse", "--is-shallow-repository"),
+            stdout=subprocess.PIPE,
+        )
+        return result.stdout.strip() == "true"
+
+    def _unshallow_ref(self, repo: Path, remote_url: str, ref: str) -> None:
+        self._run(
+            self._git_command(
+                "-C",
+                str(repo),
+                "fetch",
+                "--unshallow",
+                remote_url,
+                ref,
+            )
+        )
 
     def _run(
         self,
@@ -105,6 +225,8 @@ class RepoManager:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_ASKPASS"] = "/bin/true"
+        if self.token:
+            env["CODE_REVIEW_BOT_GIT_TOKEN"] = self.token
         try:
             return subprocess.run(
                 command,

@@ -42,6 +42,8 @@ class AcpAgentConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     model: str | None = None
+    model_via_acp: bool = False
+    model_config_option: str | None = None
     stream_limit: int | None = None
     verbose: bool = True
 
@@ -219,7 +221,7 @@ class AcpCodingAgent:
         client = CollectingClient()
         cwd = str(self.cwd)
         env = _resolve_env(config.env)
-        if config.model:
+        if config.model and not config.model_via_acp and config.model_config_option is None:
             # claude-agent-acp selects the model from process.env.ANTHROPIC_MODEL (Priority 1)
             # or settings.json top-level "model" (Priority 2). new_session() extra kwargs land
             # in _meta which the server ignores for model selection.
@@ -249,6 +251,14 @@ class AcpCodingAgent:
                 if additional_directories:
                     session_kwargs["additional_directories"] = additional_directories
                 session = await conn.new_session(**session_kwargs)
+                if config.model and config.model_via_acp:
+                    await conn.set_session_model(config.model, session.session_id)
+                elif config.model and config.model_config_option is not None:
+                    await conn.set_config_option(
+                        config.model_config_option,
+                        session.session_id,
+                        config.model,
+                    )
                 combined_prompt = _combine_prompt(prompt, system, files)
                 _log_acp_prompt(
                     combined_prompt,
@@ -266,7 +276,11 @@ class AcpCodingAgent:
                     usage_dict = _usage_to_dict(response.usage)
             except Exception:
                 _log_acp_error(
-                    _proc, cwd=cwd, model=config.model, command=config.command, args=config.args
+                    _proc,
+                    cwd=cwd,
+                    model=config.model,
+                    command=config.command,
+                    args=config.args,
                 )
                 raise
             finally:

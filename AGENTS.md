@@ -20,10 +20,10 @@ src/code_review_bot/
 ├── config.py               # pydantic-settings; Settings singleton via get_settings()
 ├── cli.py                  # typer CLI entry point
 ├── agent/
-│   ├── protocol.py         # CodingAgent protocol
 │   ├── acp.py              # ACP subprocess implementation (AcpCodingAgent)
-│   ├── presets.py          # built-in launcher presets: claude, codex
-│   └── factory.py          # build_coding_agent(settings, cwd)
+│   ├── factory.py          # build_coding_agent(settings, cwd)
+│   ├── presets.py          # built-in launcher presets: claude, codex, opencode
+│   └── protocol.py         # CodingAgent protocol
 ├── platforms/
 │   ├── protocol.py         # PlatformAdapter protocol
 │   ├── factory.py          # build_platform_adapter(settings)
@@ -51,7 +51,10 @@ src/code_review_bot/
 ## Review flow
 
 1. `ReviewOrchestrator.review_change_request(cr_id)` resolves the project ref, fetches the
-   change request, and clones the source branch into a temporary workspace.
+   change request, and creates a temporary workspace with the target branch checked out. The
+   source and target commits remain available as `refs/code-review/source` and
+   `refs/code-review/target`, pinned to the platform's diff SHAs when provided. Shallow clones are
+   automatically deepened when the two review refs do not expose a merge base.
 2. `load_skill(REVIEW_SKILL)` returns a skill object whose `build_prompt()` assembles the full
    agent prompt (system output contract + task context + skill reference + MR metadata).
 3. `CodingAgentReviewRunner` passes the prompt to the `CodingAgent` and parses the JSON
@@ -123,8 +126,25 @@ format the skill itself may specify.
 
 ## Docker bootstrap
 
-`docker/entrypoint.sh` is the container entrypoint: it runs `docker/bootstrap.py` (Claude
-setup) then `exec`s the command. `bootstrap.py` only supports `ACP_AGENT_TYPE=claude`; any
-other value exits with an error. On first start it writes `~/.claude/settings.json` from
-`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` and optional `ANTHROPIC_MODEL` /
-`ANTHROPIC_BASE_URL`. If the file already exists it is left untouched.
+`.github/workflows/docker-publish.yml` builds two Docker Hub tags on pushes to `main` from the
+shared `docker/Dockerfile`: `whhe/code-review-bot:claude-code` and `:latest` both select the Claude
+stage, while `whhe/code-review-bot:opencode` selects the OpenCode stage. Agent-specific stages
+install only the selected package, keep OpenCode-only environment defaults out of Claude images,
+and leave package versions unpinned. The public image retains the `python:3.12-slim` base and
+installs the review skill into `~/.agents/skills/code-review`.
+
+`docker/entrypoint.sh` runs the shared `docker/bootstrap.py`, then `exec`s the command. Bootstrap
+supports `ACP_AGENT_TYPE=claude` and `ACP_AGENT_TYPE=opencode`; other values fail. The image sets
+neither `ACP_COMMAND` nor `ACP_ARGS`; built-in presets resolve Claude to its `npx` command and
+OpenCode to `opencode acp`. Claude setup retains the existing `~/.claude/settings.json` behavior.
+OpenCode setup generates `~/.config/opencode/opencode.json` from `OPENCODE_UPSTREAM_ENDPOINT`,
+`OPENCODE_UPSTREAM_API_KEY`, and `OPENCODE_MODEL`, references the key through an env placeholder,
+and writes required context/output model limits. It does not override OpenCode tool permissions;
+the shared review prompt supplies the read-only behavioral constraint. The workspace has the
+target branch checked out, so each ACP agent discovers target-branch project instructions and
+configuration through its own native rules. The source branch is available only through stable
+review refs pinned to the platform's change-request version and is inspected with read-only Git
+commands; the bot does not enumerate agent instruction files. Git clone and fetch use an ephemeral
+credential helper so tokens are never embedded in workspace URLs or Git metadata. The agent
+factory explicitly forwards only the required OpenCode runtime environment through ACP's filtered
+subprocess environment. Existing global config files are left untouched.
