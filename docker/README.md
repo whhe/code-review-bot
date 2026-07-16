@@ -176,7 +176,8 @@ Optionally set `ANTHROPIC_MODEL`.
 ### GitHub Actions
 
 The repository includes `.github/workflows/code-review.yml`, which reviews pull requests targeting
-`main` with `whhe/code-review-bot:opencode`. Configure these values under **Settings → Secrets and
+`main`. It checks out the exact pull-request head, builds the shared Dockerfile's `opencode` target
+locally, and runs that development image. Configure these values under **Settings → Secrets and
 variables → Actions** before enabling the workflow:
 
 | Type | Name | Description |
@@ -190,14 +191,13 @@ Actions → General → Workflow permissions**, enable **Allow GitHub Actions to
 pull requests** so clean reviews can be approved with the built-in `GITHUB_TOKEN`.
 
 The workflow runs for opened, updated, reopened, and ready-for-review pull requests. It uses the
-built-in `GITHUB_TOKEN` with `contents: read` and `pull-requests: write`. The workflow itself does
-not check out or directly execute the pull-request branch, and it skips draft and fork pull
+built-in `GITHUB_TOKEN` with `contents: read` and `pull-requests: write`. It checks out and executes
+the pull-request branch without persisting checkout credentials, and it skips draft and fork pull
 requests. Fork pull requests are skipped because GitHub does not expose repository secrets to
-their `pull_request` workflows; branches inside the repository should therefore be limited to
-trusted collaborators. Dependabot pull requests are not skipped, but GitHub supplies Dependabot
-secrets instead of Actions secrets and gives the built-in `GITHUB_TOKEN` read-only permissions for
-those runs. To review them, add these values under **Settings → Secrets and variables →
-Dependabot**:
+their `pull_request` workflows; branches inside the repository must therefore be limited to trusted
+collaborators. Dependabot pull requests are not skipped, but GitHub supplies Dependabot secrets
+instead of Actions secrets and gives the built-in `GITHUB_TOKEN` read-only permissions for those
+runs. To review them, add these values under **Settings → Secrets and variables → Dependabot**:
 
 | Name | Description |
 |---|---|
