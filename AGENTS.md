@@ -148,3 +148,14 @@ commands; the bot does not enumerate agent instruction files. Git clone and fetc
 credential helper so tokens are never embedded in workspace URLs or Git metadata. The agent
 factory explicitly forwards only the required OpenCode runtime environment through ACP's filtered
 subprocess environment. Existing global config files are left untouched.
+
+`.github/workflows/code-review.yml` runs `whhe/code-review-bot:opencode` for non-draft,
+same-repository pull requests targeting `main` and skips fork pull requests. Dependabot pull
+requests are allowed to run, but GitHub does not provide Actions secrets and grants the built-in
+`GITHUB_TOKEN` read-only permissions for those runs. The workflow therefore prefers an optional
+`CODE_REVIEW_GITHUB_TOKEN` secret and falls back to the built-in token; Dependabot reviews require
+same-named Dependabot secrets for that write-capable token and `OPENCODE_UPSTREAM_API_KEY`. The
+workflow uses repository variables for `OPENCODE_UPSTREAM_ENDPOINT` and `OPENCODE_MODEL`.
+It enables clean-review approval with `AUTO_APPROVE_ON_CLEAN_REVIEW=true` and debug logging with
+`LOG_LEVEL=DEBUG`; the repository must allow GitHub Actions to create and approve pull requests for
+the built-in token to approve a clean review.
