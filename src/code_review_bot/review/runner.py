@@ -25,10 +25,12 @@ class CodingAgentReviewRunner:
         model_candidates: list[str] = []
         token_keys = ("input_tokens", "output_tokens", "total_tokens")
         token_totals = {key: 0 for key in token_keys}
-        token_available = {key: True for key in token_keys}
-        token_seen = {key: False for key in token_keys}
+        token_valid_counts = {key: 0 for key in token_keys}
+        run_count = 0
 
         def collect_runtime_metadata(result: object) -> None:
+            nonlocal run_count
+            run_count += 1
             model = getattr(result, "model", None)
             if isinstance(model, str) and model.strip():
                 model_candidates.append(model.strip())
@@ -38,9 +40,7 @@ class CodingAgentReviewRunner:
                 value = usage_map.get(key)
                 if isinstance(value, int):
                     token_totals[key] += value
-                    token_seen[key] = True
-                    continue
-                token_available[key] = False
+                    token_valid_counts[key] += 1
 
         async def run(current_prompt: str) -> str:
             result = await self.agent.run_once(
@@ -58,10 +58,7 @@ class CodingAgentReviewRunner:
             max_retries=self.max_json_retries,
         )
         model_value: str | None
-        unique_models: list[str] = []
-        for value in model_candidates:
-            if value not in unique_models:
-                unique_models.append(value)
+        unique_models = list(dict.fromkeys(model_candidates))
         if not unique_models:
             model_value = None
         elif len(unique_models) == 1:
@@ -72,25 +69,28 @@ class CodingAgentReviewRunner:
             model=model_value,
             input_tokens=(
                 token_totals["input_tokens"]
-                if token_seen["input_tokens"] and token_available["input_tokens"]
+                if run_count > 0 and token_valid_counts["input_tokens"] == run_count
                 else None
             ),
             output_tokens=(
                 token_totals["output_tokens"]
-                if token_seen["output_tokens"] and token_available["output_tokens"]
+                if run_count > 0 and token_valid_counts["output_tokens"] == run_count
                 else None
             ),
             total_tokens=(
                 token_totals["total_tokens"]
-                if token_seen["total_tokens"] and token_available["total_tokens"]
+                if run_count > 0 and token_valid_counts["total_tokens"] == run_count
                 else None
             ),
         )
-        if (
-            runtime.model is None
-            and runtime.input_tokens is None
-            and runtime.output_tokens is None
-            and runtime.total_tokens is None
+        if not any(
+            value is not None
+            for value in (
+                runtime.model,
+                runtime.input_tokens,
+                runtime.output_tokens,
+                runtime.total_tokens,
+            )
         ):
             return parsed
         return parsed.with_runtime(runtime)
