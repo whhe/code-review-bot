@@ -38,7 +38,7 @@ class CodingAgentReviewRunner:
             usage_map = usage if isinstance(usage, dict) else {}
             for key in token_keys:
                 value = usage_map.get(key)
-                if isinstance(value, int):
+                if isinstance(value, int) and not isinstance(value, bool):
                     token_totals[key] += value
                     token_valid_counts[key] += 1
 

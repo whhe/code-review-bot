@@ -150,3 +150,25 @@ async def test_coding_agent_review_runner_reports_multiple_models_used() -> None
 
     assert result.runtime is not None
     assert result.runtime.model == "multiple models used: provider/model-a, provider/model-b"
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_review_runner_does_not_treat_bool_usage_as_int() -> None:
+    class BoolUsageAgent:
+        async def run_once(self, prompt: str, **kwargs: object) -> AgentRunResult:
+            return AgentRunResult(
+                text='{"summary":"ok","findings":[]}',
+                parts=[],
+                usage={"input_tokens": True, "output_tokens": 3, "total_tokens": 3},
+                model="provider/model-a",
+            )
+
+    result = await CodingAgentReviewRunner(BoolUsageAgent()).review(
+        FakeSkill(), make_task_context()
+    )
+
+    assert result.runtime is not None
+    assert result.runtime.model == "provider/model-a"
+    assert result.runtime.input_tokens is None
+    assert result.runtime.output_tokens == 3
+    assert result.runtime.total_tokens == 3
