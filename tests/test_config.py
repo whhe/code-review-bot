@@ -186,6 +186,60 @@ def test_settings_acp_model_blank_string_becomes_none(monkeypatch: pytest.Monkey
     assert settings.acp_model is None
 
 
+def test_settings_review_model_name_prefers_acp_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ACP_AGENT_TYPE", "opencode")
+    monkeypatch.setenv("ACP_MODEL", "provider/explicit-model")
+    monkeypatch.setenv("OPENCODE_MODEL", "configured-model")
+    from code_review_bot.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.review_model_name == "provider/explicit-model"
+
+
+@pytest.mark.parametrize(
+    ("agent_type", "env_name", "env_value"),
+    [
+        ("claude", "ANTHROPIC_MODEL", "claude-opus-4-6"),
+        ("opencode", "OPENCODE_MODEL", "qwen3.7-max"),
+    ],
+)
+def test_settings_review_model_name_falls_back_to_agent_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_type: str,
+    env_name: str,
+    env_value: str,
+) -> None:
+    monkeypatch.delenv("ACP_MODEL", raising=False)
+    monkeypatch.setenv("ACP_AGENT_TYPE", agent_type)
+    monkeypatch.setenv(env_name, env_value)
+    from code_review_bot.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.review_model_name == env_value
+
+
+def test_settings_review_model_name_is_none_without_matching_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ACP_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.setenv("OPENCODE_MODEL", "qwen3.7-max")
+    from code_review_bot.config import Settings
+
+    settings = Settings(
+        git_repo_url="https://gitlab.test/group/project.git",
+        git_repo_token="tok",
+        acp_agent_type="claude",
+        _env_file=None,
+    )
+
+    assert settings.review_model_name is None
+
+
 def test_settings_log_dir_derives_fixed_subdirs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOG_DIR", "var/logs")
     from code_review_bot.config import Settings

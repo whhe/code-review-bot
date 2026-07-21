@@ -66,6 +66,10 @@ src/code_review_bot/
 5. `ReviewPublisher.publish()` posts inline diff comments and formats the summary, storing the new
    fingerprint set in hidden metadata for the next run. GitLab and GitHub without automatic
    approval post it as a note; GitHub with automatic approval defers it to the final review body.
+   Summary notes end with a GitHub repository attribution line containing the formatted agent type
+   and skill fingerprint, followed by the model and token-usage line. The displayed model uses
+   `ACP_MODEL` when set, otherwise `ANTHROPIC_MODEL` for Claude or `OPENCODE_MODEL` for OpenCode;
+   these fallbacks do not change ACP model selection.
 6. When `AUTO_APPROVE_ON_CLEAN_REVIEW=true` (and not in `--debug` mode), the orchestrator
    approves the change request if no new findings were published, or revokes approval when new
    findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review

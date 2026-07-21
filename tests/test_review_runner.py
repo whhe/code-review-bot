@@ -172,3 +172,25 @@ async def test_coding_agent_review_runner_does_not_treat_bool_usage_as_int() -> 
     assert result.runtime.input_tokens is None
     assert result.runtime.output_tokens == 3
     assert result.runtime.total_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_review_runner_prefers_configured_display_model() -> None:
+    class RuntimeAgent:
+        async def run_once(self, prompt: str, **kwargs: object) -> AgentRunResult:
+            return AgentRunResult(
+                text='{"summary":"ok","findings":[]}',
+                parts=[],
+                usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                model="response-model",
+            )
+
+    result = await CodingAgentReviewRunner(
+        RuntimeAgent(),
+        agent_type="opencode",
+        configured_model="configured-model",
+    ).review(FakeSkill(), make_task_context())
+
+    assert result.runtime is not None
+    assert result.runtime.agent_type == "opencode"
+    assert result.runtime.model == "configured-model"

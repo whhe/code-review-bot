@@ -4,14 +4,13 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import Any
 
 import json_repair
 from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
 
-SchemaT = TypeVar("SchemaT", bound=BaseModel)
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<json>\{.*?\})\s*```", re.DOTALL)
 TextRunner = Callable[[str], Awaitable[str]]
 
@@ -19,7 +18,7 @@ _DIAGNOSTIC_TRUNCATE = 4000
 _CTRL_ESCAPE = {"\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
 
 
-async def complete_json_with_retries(
+async def complete_json_with_retries[SchemaT: BaseModel](
     prompt: str,
     schema: type[SchemaT],
     runner: TextRunner,

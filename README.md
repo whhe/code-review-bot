@@ -122,6 +122,10 @@ See `.env.example` for the full list with descriptions.
 | `ACP_VERBOSE` | no | `true` | Log ACP input prompts, tool calls, and streamed agent messages |
 | `ACP_STREAM_LIMIT` | no | `10485760` (10 MB) | Max bytes for one ACP newline-delimited JSON frame |
 
+Review comments display `ACP_MODEL` when set. Otherwise, they fall back to `ANTHROPIC_MODEL` for
+Claude or `OPENCODE_MODEL` for OpenCode. These fallbacks are display-only and do not change the
+existing ACP model-selection behavior.
+
 The review workspace checks out the target branch. Each ACP agent therefore discovers project
 instructions and configuration through its own native rules, without the bot maintaining a list
 of recognized files. The source branch is retained only as `refs/code-review/source` and is

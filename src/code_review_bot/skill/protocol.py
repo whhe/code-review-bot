@@ -90,6 +90,7 @@ class SkillResult(BaseModel):
 
 
 class RuntimeMetadata(BaseModel):
+    agent_type: str | None = None
     model: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
