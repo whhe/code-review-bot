@@ -56,3 +56,28 @@ def test_codex_agent_uses_acp_model_config_option(tmp_path: Path) -> None:
 
     assert isinstance(agent, AcpCodingAgent)
     assert agent.config.model_config_option == "model"
+
+
+@pytest.mark.parametrize(
+    ("agent_type", "env_name", "env_value"),
+    [
+        ("claude", "ANTHROPIC_MODEL", "claude-opus-4-6"),
+        ("opencode", "OPENCODE_MODEL", "qwen3.7-max"),
+    ],
+)
+def test_review_model_fallback_does_not_change_acp_model_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    agent_type: str,
+    env_name: str,
+    env_value: str,
+) -> None:
+    monkeypatch.delenv("ACP_MODEL", raising=False)
+    monkeypatch.setenv(env_name, env_value)
+    settings = _settings(agent_type)
+
+    agent = build_coding_agent(settings, tmp_path)
+
+    assert settings.review_model_name == env_value
+    assert isinstance(agent, AcpCodingAgent)
+    assert agent.config.model is None

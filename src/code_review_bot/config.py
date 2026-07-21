@@ -51,6 +51,8 @@ class Settings(BaseSettings):
         description="Required when ACP_AGENT_TYPE is not built-in. Optional override for built-in.",
     )
     acp_model: str | None = None
+    anthropic_model: str | None = None
+    opencode_model: str | None = None
     acp_stream_limit: int = Field(
         default=10 * 1024 * 1024,
         description="Max bytes for one ACP newline-delimited JSON frame from the coding agent.",
@@ -141,6 +143,17 @@ class Settings(BaseSettings):
             args=self.acp_args,
         )[1]
 
+    @property
+    def review_model_name(self) -> str | None:
+        """Resolve the model label shown in review output without changing agent selection."""
+        if self.acp_model:
+            return self.acp_model
+        if self.acp_agent_type == "claude":
+            return self.anthropic_model
+        if self.acp_agent_type == "opencode":
+            return self.opencode_model
+        return None
+
     @field_validator("acp_agent_type", mode="before")
     @classmethod
     def normalize_acp_agent_type(cls, value: object) -> str:
@@ -158,7 +171,7 @@ class Settings(BaseSettings):
             return None
         return str(value).strip() if isinstance(value, str) else value
 
-    @field_validator("acp_model", mode="before")
+    @field_validator("acp_model", "anthropic_model", "opencode_model", mode="before")
     @classmethod
     def blank_model_is_none(cls, value: object) -> str | None:
         if value is None:

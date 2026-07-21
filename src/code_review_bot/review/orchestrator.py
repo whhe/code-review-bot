@@ -129,7 +129,11 @@ class ReviewOrchestrator:
 
             logger.info("Running skill name=%s version=%s", skill.name, skill.version)
             agent = build_coding_agent(self.settings, review_workspace / "source")
-            result = await CodingAgentReviewRunner(agent).review(skill, task_context)
+            result = await CodingAgentReviewRunner(
+                agent,
+                agent_type=self.settings.acp_agent_type,
+                configured_model=self.settings.review_model_name,
+            ).review(skill, task_context)
 
             file_filter = FileFilter(task_context.excluded_patterns, task_context.included_patterns)
             result.findings, file_excluded = file_filter.filter_findings(result.findings)

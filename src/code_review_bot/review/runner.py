@@ -16,9 +16,18 @@ class PromptBuildingSkill(Protocol):
 class CodingAgentReviewRunner:
     """Executes a review skill by dispatching to a CodingAgent and parsing its JSON output."""
 
-    def __init__(self, agent: CodingAgent, max_json_retries: int = 1) -> None:
+    def __init__(
+        self,
+        agent: CodingAgent,
+        max_json_retries: int = 1,
+        *,
+        agent_type: str | None = None,
+        configured_model: str | None = None,
+    ) -> None:
         self.agent = agent
         self.max_json_retries = max_json_retries
+        self.agent_type = agent_type
+        self.configured_model = configured_model
 
     async def review(self, skill: PromptBuildingSkill, context: ReviewTaskContext) -> SkillResult:
         prompt = skill.build_prompt(context)
@@ -57,12 +66,13 @@ class CodingAgentReviewRunner:
             run,
             max_retries=self.max_json_retries,
         )
-        model_value: str | None = None
-        unique_models = list(dict.fromkeys(model_candidates))
-        if len(unique_models) == 1:
-            model_value = unique_models[0]
-        elif len(unique_models) > 1:
-            model_value = f"multiple models used: {', '.join(unique_models)}"
+        model_value = self.configured_model
+        if model_value is None:
+            unique_models = list(dict.fromkeys(model_candidates))
+            if len(unique_models) == 1:
+                model_value = unique_models[0]
+            elif len(unique_models) > 1:
+                model_value = f"multiple models used: {', '.join(unique_models)}"
 
         def aggregate_tokens(key: str) -> int | None:
             # Show totals only when every call reported the metric so the final
@@ -73,6 +83,7 @@ class CodingAgentReviewRunner:
             return token_totals[key]
 
         runtime = RuntimeMetadata(
+            agent_type=self.agent_type,
             model=model_value,
             input_tokens=aggregate_tokens("input_tokens"),
             output_tokens=aggregate_tokens("output_tokens"),
@@ -82,6 +93,7 @@ class CodingAgentReviewRunner:
             value is not None
             for value in (
                 runtime.model,
+                runtime.agent_type,
                 runtime.input_tokens,
                 runtime.output_tokens,
                 runtime.total_tokens,
