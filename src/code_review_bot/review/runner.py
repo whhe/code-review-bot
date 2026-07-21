@@ -66,7 +66,8 @@ class CodingAgentReviewRunner:
 
         def aggregate_tokens(key: str) -> int | None:
             # Show totals only when every call reported the metric so the final
-            # summary never presents partial usage as complete usage.
+            # summary never presents partial usage as complete usage. A partial
+            # sum can under-report total tokens and look authoritative.
             if token_valid_counts[key] != run_count:
                 return None
             return token_totals[key]

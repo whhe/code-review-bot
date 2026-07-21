@@ -68,7 +68,7 @@ def format_review_note(
                 f"{finding.description}~~"
             )
         lines.append("")
-    if lines[-1] != "":
+    if lines and lines[-1] != "":
         lines.append("")
     lines.append(_format_runtime_line(runtime))
     lines.append(

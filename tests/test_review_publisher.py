@@ -230,6 +230,26 @@ async def test_formatter_marks_unavailable_runtime_values() -> None:
 
 
 @pytest.mark.asyncio
+async def test_formatter_marks_unavailable_when_runtime_missing() -> None:
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        severity_counts={"critical": 0, "high": 1, "medium": 0, "low": 0},
+        located_count=1,
+        unlocated_findings=[],
+        skill_name="default",
+        skill_version="1",
+        fingerprints=["fp1"],
+        runtime=None,
+    )
+
+    assert (
+        "Model: unavailable · Tokens: input unavailable / output unavailable / total unavailable"
+        in body
+    )
+
+
+@pytest.mark.asyncio
 async def test_publisher_renders_resolved_findings() -> None:
     adapter = FakeAdapter()
     publisher = PlatformPublisher(adapter)
