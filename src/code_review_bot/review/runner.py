@@ -67,7 +67,7 @@ class CodingAgentReviewRunner:
         def aggregate_tokens(key: str) -> int | None:
             # Show totals only when every call reported the metric so the final
             # summary never presents partial usage as complete usage.
-            if run_count == 0 or token_valid_counts[key] != run_count:
+            if token_valid_counts[key] != run_count:
                 return None
             return token_totals[key]
 
