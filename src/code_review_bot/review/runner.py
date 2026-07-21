@@ -36,7 +36,7 @@ class CodingAgentReviewRunner:
             usage_map = usage if isinstance(usage, dict) else {}
             for key in token_keys:
                 value = usage_map.get(key)
-                if isinstance(value, int) and not isinstance(value, bool):
+                if isinstance(value, int):
                     token_totals[key] += value
                     token_seen[key] = True
                     continue
@@ -67,7 +67,7 @@ class CodingAgentReviewRunner:
         elif len(unique_models) == 1:
             model_value = unique_models[0]
         else:
-            model_value = f"multiple ({', '.join(unique_models)})"
+            model_value = f"multiple models used: {', '.join(unique_models)}"
         runtime = RuntimeMetadata(
             model=model_value,
             input_tokens=(
