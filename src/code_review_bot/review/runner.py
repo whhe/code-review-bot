@@ -59,14 +59,14 @@ class CodingAgentReviewRunner:
         )
         model_value: str | None = None
         unique_models = list(dict.fromkeys(model_candidates))
-        if not unique_models:
-            pass
-        elif len(unique_models) == 1:
+        if len(unique_models) == 1:
             model_value = unique_models[0]
-        else:
+        elif len(unique_models) > 1:
             model_value = f"multiple models used: {', '.join(unique_models)}"
 
         def aggregate_tokens(key: str) -> int | None:
+            # Show totals only when every call reported the metric so the final
+            # summary never presents partial usage as complete usage.
             if run_count == 0 or token_valid_counts[key] != run_count:
                 return None
             return token_totals[key]
