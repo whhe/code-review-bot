@@ -227,6 +227,7 @@ class AcpCodingAgent:
             # in _meta which the server ignores for model selection.
             env = {**(env or {}), "ANTHROPIC_MODEL": config.model}
         usage_dict: dict[str, Any] = {}
+        response_model: str | None = None
         async with spawn_agent_process(
             client,
             config.command,
@@ -272,8 +273,13 @@ class AcpCodingAgent:
                     session_id=session.session_id,
                     prompt=[text_block(combined_prompt)],
                 )
-                if response is not None and response.usage is not None:
-                    usage_dict = _usage_to_dict(response.usage)
+                if response is not None:
+                    raw_model = getattr(response, "model", None)
+                    response_model = (
+                        raw_model if isinstance(raw_model, str) and raw_model.strip() else None
+                    )
+                    if response.usage is not None:
+                        usage_dict = _usage_to_dict(response.usage)
             except Exception:
                 _log_acp_error(
                     _proc,
@@ -290,7 +296,7 @@ class AcpCodingAgent:
         _log_usage(usage_dict)
         text = client.collected_text.strip()
         parts: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
-        return AgentRunResult(text=text, parts=parts, usage=usage_dict)
+        return AgentRunResult(text=text, parts=parts, usage=usage_dict, model=response_model)
 
 
 def _log_acp_error(proc: object, **context: object) -> None:

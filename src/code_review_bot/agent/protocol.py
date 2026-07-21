@@ -9,6 +9,7 @@ class AgentRunResult:
     text: str
     parts: list[dict[str, Any]]
     usage: dict[str, Any]
+    model: str | None = None
 
 
 class CodingAgent(Protocol):

@@ -85,3 +85,33 @@ async def test_acp_runtime_applies_agent_specific_model_selection(
     assert connection.model_calls == expected_model_calls
     assert connection.config_calls == expected_config_calls
     assert captured_env.get("ANTHROPIC_MODEL") == expected_env_model
+
+
+@pytest.mark.asyncio
+async def test_acp_runtime_returns_runtime_model_from_agent_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connection = _Connection()
+
+    async def prompt_with_model(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(usage=None, model="provider/runtime-model")
+
+    connection.prompt = prompt_with_model  # type: ignore[method-assign]
+
+    @asynccontextmanager
+    async def fake_spawn_agent_process(
+        client: object,
+        command: str,
+        *args: str,
+        env: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> AsyncIterator[tuple[_Connection, SimpleNamespace]]:
+        yield connection, SimpleNamespace(stdin=None, stdout=None, stderr=None, _transport=None)
+
+    monkeypatch.setattr(acp_sdk, "spawn_agent_process", fake_spawn_agent_process)
+    agent = AcpCodingAgent(AcpAgentConfig(command="agent", verbose=False), tmp_path)
+
+    run = await agent.run_once("review")
+
+    assert run.model == "provider/runtime-model"

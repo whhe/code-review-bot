@@ -47,6 +47,7 @@ class DebugMarkdownPublisher:
             skill_name=skill_name,
             skill_version=skill_version,
             fingerprints=fingerprints,
+            runtime=result.runtime,
         )
         summary_note_clean = _strip_metadata_comment(summary_note)
 

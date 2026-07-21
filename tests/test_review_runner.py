@@ -67,6 +67,7 @@ async def test_coding_agent_review_runner_uses_plan_agent_and_parses_json() -> N
     result = await CodingAgentReviewRunner(agent).review(FakeSkill(), make_task_context())
 
     assert result.summary == "ok"
+    assert result.runtime is None
     assert agent.agent == "plan"
     assert agent.prompts == ["review prompt"]
     assert agent.additional_directories == ["/tmp/skills/code-review"]
@@ -90,3 +91,37 @@ async def test_coding_agent_review_runner_retries_on_bad_json() -> None:
 
     assert result.summary == "retry ok"
     assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_review_runner_aggregates_runtime_across_retries() -> None:
+    call_count = 0
+
+    class RetryAgent:
+        async def run_once(self, prompt: str, **kwargs: object) -> AgentRunResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return AgentRunResult(
+                    text="not json",
+                    parts=[],
+                    usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                    model="provider/model-a",
+                )
+            return AgentRunResult(
+                text='{"summary":"retry ok","findings":[]}',
+                parts=[],
+                usage={"input_tokens": 20, "output_tokens": 3, "total_tokens": 23},
+                model="provider/model-a",
+            )
+
+    result = await CodingAgentReviewRunner(RetryAgent(), max_json_retries=1).review(
+        FakeSkill(), make_task_context()
+    )
+
+    assert call_count == 2
+    assert result.runtime is not None
+    assert result.runtime.model == "provider/model-a"
+    assert result.runtime.input_tokens == 30
+    assert result.runtime.output_tokens == 5
+    assert result.runtime.total_tokens == 35

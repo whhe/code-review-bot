@@ -4,7 +4,7 @@ from code_review_bot.platforms.models import ChangeRequest, InlinePosition
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
 from code_review_bot.review.publish.formatter import BOT_METADATA_PREFIX, format_review_note
 from code_review_bot.review.publish.platform import PlatformPublisher
-from code_review_bot.skill.protocol import Finding, SkillResult
+from code_review_bot.skill.protocol import Finding, RuntimeMetadata, SkillResult
 
 
 def make_change_request() -> ChangeRequest:
@@ -36,6 +36,17 @@ def make_finding(**overrides: object) -> Finding:
     }
     data.update(overrides)
     return Finding(**data)
+
+
+def make_runtime(**overrides: object) -> RuntimeMetadata:
+    data: dict[str, object] = {
+        "model": "provider/model",
+        "input_tokens": 12345,
+        "output_tokens": 678,
+        "total_tokens": 13023,
+    }
+    data.update(overrides)
+    return RuntimeMetadata(**data)
 
 
 class FakeAdapter:
@@ -180,6 +191,42 @@ async def test_formatter_includes_unlocated_finding() -> None:
     )
 
     assert "A risky pattern" in body
+
+
+@pytest.mark.asyncio
+async def test_formatter_includes_runtime_line() -> None:
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        severity_counts={"critical": 0, "high": 1, "medium": 0, "low": 0},
+        located_count=1,
+        unlocated_findings=[],
+        skill_name="default",
+        skill_version="1",
+        fingerprints=["fp1"],
+        runtime=make_runtime(),
+    )
+
+    assert "Model: provider/model · Tokens: input 12,345 / output 678 / total 13,023" in body
+
+
+@pytest.mark.asyncio
+async def test_formatter_marks_unavailable_runtime_values() -> None:
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        severity_counts={"critical": 0, "high": 1, "medium": 0, "low": 0},
+        located_count=1,
+        unlocated_findings=[],
+        skill_name="default",
+        skill_version="1",
+        fingerprints=["fp1"],
+        runtime=make_runtime(model=None, output_tokens=None),
+    )
+
+    assert (
+        "Model: unavailable · Tokens: input 12,345 / output unavailable / total 13,023" in body
+    )
 
 
 @pytest.mark.asyncio
