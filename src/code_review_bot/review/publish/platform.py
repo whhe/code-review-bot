@@ -45,6 +45,7 @@ class PlatformPublisher:
             skill_name=skill_name,
             skill_version=skill_version,
             fingerprints=fingerprints,
+            runtime=result.runtime,
         )
         if publish_summary:
             await self.adapter.publish_summary(cr.project_ref, cr.cr_id, body)

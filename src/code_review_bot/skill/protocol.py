@@ -1,6 +1,6 @@
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 _SEVERITIES = ("critical", "high", "medium", "low")
 
@@ -77,6 +77,23 @@ class SkillResult(BaseModel):
 
     summary: str
     findings: list[Finding] = Field(default_factory=list)
+    _runtime: "RuntimeMetadata | None" = PrivateAttr(default=None)
+
+    @property
+    def runtime(self) -> "RuntimeMetadata | None":
+        return self._runtime
+
+    def with_runtime(self, runtime: "RuntimeMetadata | None") -> "SkillResult":
+        copied = self.model_copy(deep=True)
+        copied._runtime = runtime
+        return copied
+
+
+class RuntimeMetadata(BaseModel):
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class ReviewSkill(Protocol):
