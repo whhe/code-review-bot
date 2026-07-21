@@ -64,27 +64,18 @@ class CodingAgentReviewRunner:
         elif len(unique_models) == 1:
             model_value = unique_models[0]
         else:
-            preview = ", ".join(unique_models[:2])
-            extra = len(unique_models) - 2
-            suffix = f", and {extra} more" if extra > 0 else ""
-            model_value = f"multiple models used: {preview}{suffix}"
+            model_value = f"multiple models used: {', '.join(unique_models)}"
+
+        def aggregate_tokens(key: str) -> int | None:
+            if run_count == 0 or token_valid_counts[key] != run_count:
+                return None
+            return token_totals[key]
+
         runtime = RuntimeMetadata(
             model=model_value,
-            input_tokens=(
-                token_totals["input_tokens"]
-                if run_count > 0 and token_valid_counts["input_tokens"] == run_count
-                else None
-            ),
-            output_tokens=(
-                token_totals["output_tokens"]
-                if run_count > 0 and token_valid_counts["output_tokens"] == run_count
-                else None
-            ),
-            total_tokens=(
-                token_totals["total_tokens"]
-                if run_count > 0 and token_valid_counts["total_tokens"] == run_count
-                else None
-            ),
+            input_tokens=aggregate_tokens("input_tokens"),
+            output_tokens=aggregate_tokens("output_tokens"),
+            total_tokens=aggregate_tokens("total_tokens"),
         )
         if not any(
             value is not None
