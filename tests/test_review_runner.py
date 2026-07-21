@@ -125,3 +125,28 @@ async def test_coding_agent_review_runner_aggregates_runtime_across_retries() ->
     assert result.runtime.input_tokens == 30
     assert result.runtime.output_tokens == 5
     assert result.runtime.total_tokens == 35
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_review_runner_reports_multiple_models_used() -> None:
+    call_count = 0
+
+    class RetryAgent:
+        async def run_once(self, prompt: str, **kwargs: object) -> AgentRunResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return AgentRunResult(text="not json", parts=[], usage={}, model="provider/model-a")
+            return AgentRunResult(
+                text='{"summary":"retry ok","findings":[]}',
+                parts=[],
+                usage={},
+                model="provider/model-b",
+            )
+
+    result = await CodingAgentReviewRunner(RetryAgent(), max_json_retries=1).review(
+        FakeSkill(), make_task_context()
+    )
+
+    assert result.runtime is not None
+    assert result.runtime.model == "multiple models used: provider/model-a, provider/model-b"

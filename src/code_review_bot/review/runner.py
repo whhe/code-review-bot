@@ -57,14 +57,17 @@ class CodingAgentReviewRunner:
             run,
             max_retries=self.max_json_retries,
         )
-        model_value: str | None
+        model_value: str | None = None
         unique_models = list(dict.fromkeys(model_candidates))
         if not unique_models:
-            model_value = None
+            pass
         elif len(unique_models) == 1:
             model_value = unique_models[0]
         else:
-            model_value = f"multiple models used: {', '.join(unique_models)}"
+            preview = ", ".join(unique_models[:2])
+            extra = len(unique_models) - 2
+            suffix = f", and {extra} more" if extra > 0 else ""
+            model_value = f"multiple models used: {preview}{suffix}"
         runtime = RuntimeMetadata(
             model=model_value,
             input_tokens=(
