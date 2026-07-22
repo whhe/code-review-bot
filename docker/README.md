@@ -34,7 +34,8 @@ docker build -f docker/Dockerfile \
 Select the `claude` or `opencode` target to install only that coding agent. A build without
 `--target` uses the final `claude` stage. Package versions are intentionally unpinned, so a rebuilt
 npm layer resolves the current registry version; `npm list -g --depth=0` records the resolved
-version in the build log. A cached layer retains its installed version.
+version in the build log. A cached layer retains its installed version. Both images include
+Node.js 22; the Docker host does not need Node.js installed.
 
 ## Coding-agent image tags
 
@@ -48,7 +49,7 @@ whhe/code-review-bot:opencode
 
 Each target persists its matching `ACP_AGENT_TYPE`. Both variants leave `ACP_COMMAND` and
 `ACP_ARGS` unset. Built-in presets start Claude through
-`npx -y @zed-industries/claude-agent-acp` and OpenCode through `opencode acp`. Agent-specific
+`npx -y @agentclientprotocol/claude-agent-acp` and OpenCode through `opencode acp`. Agent-specific
 Docker stages ensure Claude images do not contain OpenCode-only environment defaults.
 
 `:latest` and `:claude-code` are aliases for the same Claude image. OpenCode is published only as

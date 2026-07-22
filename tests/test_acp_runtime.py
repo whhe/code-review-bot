@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,9 +14,10 @@ class _Connection:
     def __init__(self) -> None:
         self.model_calls: list[tuple[str, str]] = []
         self.config_calls: list[tuple[str, str, str]] = []
+        self.initialize_response = SimpleNamespace(agent_info=None, protocol_version=1)
 
-    async def initialize(self, **kwargs: object) -> None:
-        return None
+    async def initialize(self, **kwargs: object) -> SimpleNamespace:
+        return self.initialize_response
 
     async def new_session(self, **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(session_id="session-1")
@@ -115,3 +117,52 @@ async def test_acp_runtime_returns_runtime_model_from_agent_response(
     run = await agent.run_once("review")
 
     assert run.model == "provider/runtime-model"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent_info", "command", "expected_log"),
+    [
+        (
+            SimpleNamespace(name="claude-agent-acp", version="0.60.0"),
+            "npx",
+            "[agent runtime] name=claude-agent-acp version=0.60.0 protocol=1 command=npx",
+        ),
+        (
+            None,
+            "agent",
+            "[agent runtime] name=(unknown) version=(unknown) protocol=1 command=agent",
+        ),
+    ],
+)
+async def test_acp_runtime_logs_agent_identity_from_initialize_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    agent_info: SimpleNamespace | None,
+    command: str,
+    expected_log: str,
+) -> None:
+    connection = _Connection()
+    connection.initialize_response = SimpleNamespace(
+        agent_info=agent_info,
+        protocol_version=1,
+    )
+
+    @asynccontextmanager
+    async def fake_spawn_agent_process(
+        client: object,
+        command: str,
+        *args: str,
+        env: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> AsyncIterator[tuple[_Connection, SimpleNamespace]]:
+        yield connection, SimpleNamespace(stdin=None, stdout=None, stderr=None, _transport=None)
+
+    monkeypatch.setattr(acp_sdk, "spawn_agent_process", fake_spawn_agent_process)
+    agent = AcpCodingAgent(AcpAgentConfig(command=command, verbose=False), tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="code_review_bot.agent.acp"):
+        await agent.run_once("review")
+
+    assert expected_log in caplog.messages

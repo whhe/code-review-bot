@@ -113,7 +113,7 @@ def test_settings_acp_agent_type_defaults_to_claude(monkeypatch: pytest.MonkeyPa
     settings = Settings(_env_file=None)
     assert settings.acp_agent_type == "claude"
     assert settings.resolved_acp_command == "npx"
-    assert settings.resolved_acp_args == ["-y", "@zed-industries/claude-agent-acp"]
+    assert settings.resolved_acp_args == ["-y", "@agentclientprotocol/claude-agent-acp"]
 
 
 def test_settings_acp_agent_type_codex_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +124,7 @@ def test_settings_acp_agent_type_codex_launcher(monkeypatch: pytest.MonkeyPatch)
 
     settings = Settings(_env_file=None)
     assert settings.acp_agent_type == "codex"
-    assert settings.resolved_acp_args == ["-y", "@zed-industries/codex-acp"]
+    assert settings.resolved_acp_args == ["-y", "@agentclientprotocol/codex-acp"]
 
 
 def test_settings_acp_agent_type_opencode_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
