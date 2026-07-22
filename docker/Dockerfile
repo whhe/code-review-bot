@@ -24,7 +24,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
         curl \
         gnupg \
         ripgrep \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -82,7 +82,7 @@ USER root
 ARG NPM_CONFIG_REGISTRY
 RUN set -eu; \
     if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi; \
-    npm install -g @zed-industries/claude-agent-acp; \
+    npm install -g @agentclientprotocol/claude-agent-acp; \
     npm list -g --depth=0
 USER appuser
 ENV ACP_AGENT_TYPE=claude

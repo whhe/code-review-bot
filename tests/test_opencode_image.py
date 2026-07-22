@@ -13,6 +13,7 @@ def test_shared_dockerfile_installs_only_selected_agent() -> None:
 
     dockerfile = path.read_text(encoding="utf-8")
     assert "FROM python:3.12-slim AS base" in dockerfile
+    assert "https://deb.nodesource.com/setup_22.x" in dockerfile
     assert "FROM base AS opencode" in dockerfile
     assert "FROM base AS claude" in dockerfile
     assert "FROM agent-${ACP_AGENT_TYPE}" not in dockerfile
@@ -28,7 +29,7 @@ def test_shared_dockerfile_installs_only_selected_agent() -> None:
         "FROM base AS claude", 1
     )[0]
     claude_stage = dockerfile.split("FROM base AS claude", 1)[1]
-    assert "npm install -g @zed-industries/claude-agent-acp" in claude_stage
+    assert "npm install -g @agentclientprotocol/claude-agent-acp" in claude_stage
     assert "ENV ACP_AGENT_TYPE=claude" in claude_stage
     assert "OPENCODE_" not in claude_stage
     assert "npm install -g opencode-ai" in opencode_stage
