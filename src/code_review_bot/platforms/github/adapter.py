@@ -1,3 +1,5 @@
+import httpx
+
 from code_review_bot.platforms.github.client import GitHubClient
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition, InlineThread
 
@@ -11,8 +13,10 @@ class GitHubAdapter:
 
     platform_name = "github"
 
-    def __init__(self, client: GitHubClient) -> None:
+    def __init__(self, client: GitHubClient, metadata_author_id: str = "") -> None:
         self._client = client
+        self._configured_metadata_author_id = metadata_author_id
+        self._resolved_metadata_author_id: str | None = None
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -29,10 +33,34 @@ class GitHubAdapter:
         owner, repo = _split_project_ref(project_ref)
         issue_comments = await self._client.list_issue_comments(owner, repo, int(cr_id))
         reviews = await self._client.list_pull_reviews(owner, repo, int(cr_id))
+        metadata_author_id = await self._get_metadata_author_id()
         return sorted(
-            [*issue_comments, *reviews],
+            [
+                note
+                for note in [*issue_comments, *reviews]
+                if _github_note_author_id(note) == metadata_author_id
+            ],
             key=lambda note: str(note.get("submitted_at") or note.get("created_at") or ""),
         )
+
+    async def _get_metadata_author_id(self) -> str:
+        if self._resolved_metadata_author_id is not None:
+            return self._resolved_metadata_author_id
+        try:
+            user = await self._client.get_authenticated_user()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403} and self._configured_metadata_author_id:
+                self._resolved_metadata_author_id = self._configured_metadata_author_id
+                return self._resolved_metadata_author_id
+            raise
+        author_id = str(user.get("id") or "")
+        if not author_id:
+            raise RuntimeError(
+                "GitHub authenticated user response is missing id; "
+                "set REVIEW_METADATA_AUTHOR_ID explicitly"
+            )
+        self._resolved_metadata_author_id = author_id
+        return author_id
 
     async def list_inline_threads(self, project_ref: str, cr_id: str) -> list[InlineThread]:
         owner, repo = _split_project_ref(project_ref)
@@ -130,6 +158,13 @@ def _split_project_ref(project_ref: str) -> tuple[str, str]:
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ValueError(f"Invalid GitHub project_ref {project_ref!r}: expected 'owner/repo'")
     return parts[0], parts[1]
+
+
+def _github_note_author_id(note: dict[str, object]) -> str:
+    user = note.get("user")
+    if not isinstance(user, dict):
+        return ""
+    return str(user.get("id") or "")
 
 
 def _parse_change_request(

@@ -1,6 +1,7 @@
 import pytest
 
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition
+from code_review_bot.review.context import extract_metadata
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
 from code_review_bot.review.publish.formatter import BOT_METADATA_PREFIX, format_review_note
 from code_review_bot.review.publish.platform import PlatformPublisher
@@ -95,7 +96,6 @@ async def test_publisher_creates_inline_from_agent_line() -> None:
         SkillResult(summary="Reviewed", findings=[make_finding()]),
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
     )
 
     assert outcome.published is True
@@ -117,11 +117,90 @@ async def test_publisher_moves_finding_to_unlocated_when_inline_fails() -> None:
         SkillResult(summary="Reviewed", findings=[make_finding()]),
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
     )
 
     assert outcome.inline_comments == 0
     assert "A risky pattern" in adapter.summaries_posted[0]
+    assert '"unlocated_findings":[{"severity":"high"' in adapter.summaries_posted[0]
+
+
+@pytest.mark.asyncio
+async def test_publisher_records_only_current_unlocated_findings_in_each_summary() -> None:
+    adapter = FailingInlineAdapter()
+    publisher = PlatformPublisher(adapter)
+
+    await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="First review", findings=[make_finding()]),
+        skill_name="default",
+        skill_version="1",
+    )
+    first_summary = adapter.summaries_posted[0]
+
+    await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Second review", findings=[]),
+        skill_name="default",
+        skill_version="1",
+        existing_notes=[{"id": 1, "body": first_summary}],
+    )
+
+    second_summary = adapter.summaries_posted[1]
+    assert '"unlocated_findings":[]' in second_summary
+    assert "A risky pattern" not in second_summary
+
+    metadata = extract_metadata(
+        [
+            {"id": 1, "body": first_summary},
+            {"id": 2, "body": second_summary},
+        ]
+    )
+    assert metadata is not None
+    assert metadata.unlocated_findings == [make_finding()]
+
+
+@pytest.mark.asyncio
+async def test_publisher_records_metadata_only_findings_without_visible_summary_entry() -> None:
+    adapter = FakeAdapter()
+    publisher = PlatformPublisher(adapter)
+    finding = make_finding()
+
+    await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Migration review", findings=[]),
+        skill_name="default",
+        skill_version="1",
+        metadata_findings=[finding],
+    )
+
+    body = adapter.summaries_posted[0]
+    visible_body = body.split(BOT_METADATA_PREFIX, 1)[0]
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert "A risky pattern" not in visible_body
+    assert metadata is not None
+    assert metadata.unlocated_findings == [finding]
+
+
+@pytest.mark.asyncio
+async def test_publisher_drops_unlocated_history_from_different_skill_version() -> None:
+    adapter = FailingInlineAdapter()
+    publisher = PlatformPublisher(adapter)
+    previous_summary = format_review_note(
+        cr=make_change_request(),
+        skill_name="old-skill",
+        skill_version="1",
+        metadata_findings=[make_finding()],
+    )
+
+    await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="New skill review", findings=[]),
+        skill_name="new-skill",
+        skill_version="2",
+        existing_notes=[{"id": 1, "body": previous_summary}],
+    )
+
+    assert "A risky pattern" not in adapter.summaries_posted[0]
 
 
 @pytest.mark.asyncio
@@ -134,7 +213,6 @@ async def test_publisher_always_creates_summary_note() -> None:
         SkillResult(summary="Reviewed", findings=[]),
         skill_name="default",
         skill_version="1",
-        fingerprints=[],
     )
 
     assert len(adapter.summaries_posted) == 1
@@ -151,7 +229,6 @@ async def test_publisher_can_defer_summary_to_platform_review() -> None:
         SkillResult(summary="Reviewed", findings=[]),
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
         publish_summary=False,
     )
 
@@ -161,7 +238,7 @@ async def test_publisher_can_defer_summary_to_platform_review() -> None:
 
 
 @pytest.mark.asyncio
-async def test_formatter_includes_metadata_for_incremental_dedupe() -> None:
+async def test_formatter_includes_review_metadata() -> None:
     body = format_review_note(
         cr=make_change_request(),
         summary="Reviewed",
@@ -170,12 +247,42 @@ async def test_formatter_includes_metadata_for_incremental_dedupe() -> None:
         unlocated_findings=[],
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
     )
 
     assert BOT_METADATA_PREFIX in body
     assert '"head_sha":"head"' in body
-    assert '"fingerprints":["fp1"]' in body
+    assert '"fingerprints"' not in body
+
+
+def test_formatter_round_trips_legacy_fingerprints_when_provided() -> None:
+    body = format_review_note(
+        cr=make_change_request(),
+        skill_name="default",
+        skill_version="1",
+        fingerprints=["fp-a", "fp-b"],
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+
+    assert metadata is not None
+    assert metadata.schema_version == 2
+    assert metadata.fingerprints == {"fp-a", "fp-b"}
+
+
+def test_formatter_keeps_agent_text_inside_metadata_comment() -> None:
+    finding = make_finding(description="Literal } --> must not terminate metadata")
+
+    body = format_review_note(
+        cr=make_change_request(),
+        skill_name="default",
+        skill_version="1",
+        metadata_findings=[finding],
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert body.count("-->") == 1
+    assert metadata is not None
+    assert metadata.unlocated_findings == [finding]
 
 
 @pytest.mark.asyncio
@@ -188,7 +295,6 @@ async def test_formatter_includes_unlocated_finding() -> None:
         unlocated_findings=[make_finding()],
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
     )
 
     assert "A risky pattern" in body
@@ -204,7 +310,6 @@ async def test_formatter_includes_runtime_line() -> None:
         unlocated_findings=[],
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
         runtime=make_runtime(),
     )
 
@@ -221,7 +326,6 @@ async def test_formatter_renders_attribution_before_final_model_line() -> None:
         unlocated_findings=[],
         skill_name="default",
         skill_version="43b5df0c",
-        fingerprints=["fp1"],
         runtime=make_runtime(model="qwen3.7-max"),
     )
 
@@ -250,7 +354,6 @@ def test_formatter_uses_agent_display_name(agent_type: str, expected: str) -> No
         cr=make_change_request(),
         skill_name="default",
         skill_version="43b5df0c",
-        fingerprints=[],
         runtime=make_runtime(agent_type=agent_type),
     )
 
@@ -267,7 +370,6 @@ async def test_formatter_marks_unavailable_runtime_values() -> None:
         unlocated_findings=[],
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
         runtime=make_runtime(model=None, output_tokens=None),
     )
 
@@ -284,7 +386,6 @@ async def test_formatter_marks_unavailable_when_runtime_missing() -> None:
         unlocated_findings=[],
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
         runtime=None,
     )
 
@@ -305,13 +406,29 @@ async def test_publisher_renders_resolved_findings() -> None:
         SkillResult(summary="Reviewed", findings=[]),
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
         resolved_findings=[resolved_finding],
     )
 
     assert outcome.inline_comments == 0
     assert adapter.inline_bodies == []
     assert "A risky pattern" in adapter.summaries_posted[0]
+
+
+@pytest.mark.asyncio
+async def test_publisher_no_resolved_section_when_empty() -> None:
+    adapter = FakeAdapter()
+    publisher = PlatformPublisher(adapter)
+
+    outcome = await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=[make_finding()]),
+        skill_name="default",
+        skill_version="1",
+        resolved_findings=[],
+    )
+
+    assert outcome.inline_comments == 1
+    assert "Previously resolved" not in adapter.summaries_posted[0]
 
 
 @pytest.mark.asyncio
@@ -325,7 +442,6 @@ async def test_debug_publisher_writes_findings_file(tmp_path: object) -> None:
         SkillResult(summary="Review complete", findings=[make_finding()]),
         skill_name="default",
         skill_version="1",
-        fingerprints=["fp1"],
     )
 
     out_file = Path(str(tmp_path)) / "project-1_cr-5.md"

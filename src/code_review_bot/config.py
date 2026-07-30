@@ -18,6 +18,14 @@ class Settings(BaseSettings):
 
     git_repo_url: str
     git_repo_token: str
+    review_metadata_author_id: str = Field(
+        default="",
+        description=(
+            "Trusted platform user ID for review metadata. Normally auto-discovered from the "
+            "access token; required for token types such as GitHub App installation tokens that "
+            "cannot call GET /user."
+        ),
+    )
 
     # Optional override for the platform API base URL. When empty, the value
     # is derived as "scheme://host[:port]" from git_repo_url. Set this only

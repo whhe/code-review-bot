@@ -27,12 +27,13 @@ def format_review_note(
     cr: ChangeRequest,
     skill_name: str,
     skill_version: str,
-    fingerprints: list[str],
+    fingerprints: list[str] | None = None,
     summary: str | None = None,
     severity_counts: dict[str, int] | None = None,
     located_count: int = 0,
     unlocated_findings: list[Finding] | None = None,
     resolved_findings: list[Finding] | None = None,
+    metadata_findings: list[Finding] | None = None,
     runtime: RuntimeMetadata | None = None,
 ) -> str:
     findings = unlocated_findings or []
@@ -80,12 +81,18 @@ def format_review_note(
     lines.append(_format_attribution_line(runtime, skill_version))
     lines.append(_format_runtime_line(runtime))
     metadata = {
+        "schema_version": 2,
         "head_sha": cr.head_sha,
         "skill": skill_name,
         "version": skill_version,
-        "fingerprints": sorted(fingerprints),
+        "unlocated_findings": [
+            finding.model_dump(mode="json") for finding in (metadata_findings or [])
+        ],
     }
-    lines.append(f"{BOT_METADATA_PREFIX}{json.dumps(metadata, separators=(',', ':'))} -->")
+    if fingerprints is not None:
+        metadata["fingerprints"] = fingerprints
+    metadata_json = json.dumps(metadata, separators=(",", ":")).replace("--", r"\u002d\u002d")
+    lines.append(f"{BOT_METADATA_PREFIX}{metadata_json} -->")
     return "\n".join(lines)
 
 

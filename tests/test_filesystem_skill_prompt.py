@@ -4,6 +4,7 @@ from code_review_bot.platforms.models import ChangeRequest, InlineThread
 from code_review_bot.review.models import ReviewTaskContext
 from code_review_bot.skill.filesystem import FilesystemMarkdownSkill
 from code_review_bot.skill.loader import load_skill
+from code_review_bot.skill.protocol import Finding
 
 
 def make_change_request() -> ChangeRequest:
@@ -209,7 +210,34 @@ def test_prompt_includes_rules_header() -> None:
     assert "</inline_threads>" in prompt
     assert "Existing inline review comments" in prompt
     assert "Explicit no-action" in prompt
-    assert "Resolved but incomplete fix" in prompt
+    assert "same defect instance" in prompt
+    assert "same affected behavior or call path" in prompt
+    assert "Similar root-cause patterns, impacts, severities, or required changes alone" in prompt
+    assert "each require a separate code change must remain separate findings" in prompt
+    assert "must not create a new finding" in prompt
+    assert "Compare every candidate finding with every existing inline thread" in prompt
+
+
+def test_prompt_includes_previous_unlocated_findings() -> None:
+    from code_review_bot.skill.filesystem import build_review_prompt
+
+    finding = Finding(
+        severity="high",
+        description="summary-only issue",
+        file_path="src/a.py",
+        line_range="outside diff",
+        reason="The platform rejected the inline position.",
+        confidence=90,
+    )
+    context = make_task_context().model_copy(update={"previous_unlocated_findings": [finding]})
+
+    prompt = build_review_prompt(context, "https://example.com/skill")
+
+    assert "Previously reported summary-only findings" in prompt
+    assert "`src/a.py:outside diff`" in prompt
+    assert "summary-only issue" in prompt
+    assert "same defect instance" in prompt
+    assert "demonstrably fixed and the current change introduces it again" in prompt
 
 
 def test_prompt_shows_resolved_status_inline() -> None:

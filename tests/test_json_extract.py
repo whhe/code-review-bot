@@ -1,7 +1,7 @@
 import pytest
 
 from code_review_bot.agent.json_extract import complete_json_with_retries, extract_json
-from code_review_bot.skill.protocol import SkillResult
+from code_review_bot.skill.protocol import Finding, SkillResult
 
 
 def test_extract_json_from_plain_json() -> None:
@@ -24,6 +24,28 @@ def test_extract_json_from_surrounding_text() -> None:
 def test_extract_json_raises_when_no_json() -> None:
     with pytest.raises(ValueError, match="no JSON object found"):
         extract_json("no json here at all")
+
+
+@pytest.mark.parametrize(
+    ("anchor_text", "expected"),
+    [
+        ("line one\nline two", "line one"),
+        ("\n  line two  \n", "line two"),
+        ("x" * 81, "x" * 80),
+    ],
+)
+def test_finding_canonicalizes_anchor_text(anchor_text: str, expected: str) -> None:
+    finding = Finding(
+        severity="medium",
+        description="issue",
+        file_path="a.py",
+        line_range="1",
+        anchor_text=anchor_text,
+        reason="reason",
+        confidence=80,
+    )
+
+    assert finding.anchor_text == expected
 
 
 @pytest.mark.asyncio

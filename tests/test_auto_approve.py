@@ -5,12 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from code_review_bot.config import Settings
-from code_review_bot.platforms.models import ChangeRequest, InlinePosition
+from code_review_bot.platforms.models import ChangeRequest, InlinePosition, InlineThread
+from code_review_bot.review.context import BotMetadata, compute_fingerprint
 from code_review_bot.review.models import ReviewOutcome
 from code_review_bot.review.orchestrator import ReviewOrchestrator
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
 from code_review_bot.review.publish.platform import PlatformPublisher
-from code_review_bot.skill.protocol import Finding, SkillResult
+from code_review_bot.skill.protocol import Finding, RuntimeMetadata, SkillResult
 
 
 def _make_change_request(**overrides: object) -> ChangeRequest:
@@ -123,6 +124,8 @@ class ReviewBodyApprovalTrackingAdapter(ApprovalTrackingAdapter):
 class LegacyPublisher:
     def __init__(self) -> None:
         self.calls = 0
+        self.fingerprints: list[str] = []
+        self.findings: list[Finding] = []
 
     async def publish(
         self,
@@ -135,6 +138,8 @@ class LegacyPublisher:
         resolved_findings: list[Finding] | None = None,
     ) -> ReviewOutcome:
         self.calls += 1
+        self.fingerprints = fingerprints
+        self.findings = list(result.findings)
         return ReviewOutcome(summary=result.summary)
 
 
@@ -380,7 +385,9 @@ def _make_orchestrator_ignore_low(adapter: ApprovalTrackingAdapter) -> ReviewOrc
 async def _stub_review_internals(
     orchestrator: ReviewOrchestrator,
     skill_result: SkillResult,
-    *,
+    *subsequent_results: SkillResult,
+    previous_metadata: BotMetadata | None = None,
+    metadata_side_effect: list[BotMetadata | None] | None = None,
     stub_publisher: bool = True,
 ):
     """Stub all review_change_request dependencies except the approval logic."""
@@ -408,28 +415,333 @@ async def _stub_review_internals(
         mock_runner_cls = stack.enter_context(
             patch("code_review_bot.review.orchestrator.CodingAgentReviewRunner")
         )
-        stack.enter_context(
-            patch("code_review_bot.review.orchestrator.extract_metadata", return_value=None)
+        metadata_patch = patch(
+            "code_review_bot.review.orchestrator.extract_metadata",
+            side_effect=metadata_side_effect,
         )
-        stack.enter_context(
-            patch(
-                "code_review_bot.review.orchestrator.compute_fingerprint",
-                side_effect=lambda name, ver, f: f"fp-{id(f)}",
+        if metadata_side_effect is None:
+            metadata_patch = patch(
+                "code_review_bot.review.orchestrator.extract_metadata",
+                return_value=previous_metadata,
             )
-        )
+        stack.enter_context(metadata_patch)
         mock_filter_cls = stack.enter_context(
             patch("code_review_bot.review.orchestrator.FileFilter")
         )
 
-        mock_runner_cls.return_value.review = AsyncMock(return_value=skill_result)
-        mock_filter_cls.return_value.filter_findings.return_value = (skill_result.findings, 0)
+        mock_runner_cls.return_value.review = AsyncMock(
+            side_effect=[skill_result, *subsequent_results]
+        )
+        mock_filter_cls.return_value.filter_findings.side_effect = lambda findings: (findings, 0)
         orchestrator.repo_manager.make_review_workspace = AsyncMock(return_value=Path("/tmp/ws"))
         orchestrator.repo_manager.cleanup_review_workspace = MagicMock()
         if stub_publisher:
             orchestrator.publisher.publish = AsyncMock(  # type: ignore[method-assign]
                 return_value=ReviewOutcome(summary="ok", review_body="Full review summary")
             )
-        yield
+        yield mock_runner_cls.return_value.review
+
+
+def _make_thread(description: str) -> InlineThread:
+    return InlineThread(
+        file_path="foo.py",
+        line_range="1",
+        description=description,
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_restarts_once_when_inline_threads_change() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [_make_thread("old comment")],
+            [_make_thread("new reply")],
+            [_make_thread("new reply")],
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    first = SkillResult(summary="stale", findings=[_make_finding("low")]).with_runtime(
+        RuntimeMetadata(
+            agent_type="opencode",
+            model="model",
+            input_tokens=10,
+            output_tokens=2,
+            total_tokens=12,
+        )
+    )
+    refreshed = SkillResult(summary="fresh", findings=[]).with_runtime(
+        RuntimeMetadata(
+            agent_type="opencode",
+            model="model",
+            input_tokens=20,
+            output_tokens=3,
+            total_tokens=23,
+        )
+    )
+
+    async with _stub_review_internals(orchestrator, first, refreshed) as review:
+        await orchestrator.review_change_request("5")
+
+    assert review.await_count == 2
+    refreshed_context = review.await_args_list[1].args[1]
+    assert refreshed_context.inline_threads == [_make_thread("new reply")]
+    published_result = orchestrator.publisher.publish.await_args.args[1]  # type: ignore[union-attr]
+    assert published_result.summary == "fresh"
+    assert published_result.runtime == RuntimeMetadata(
+        agent_type="opencode",
+        model="model",
+        input_tokens=30,
+        output_tokens=5,
+        total_tokens=35,
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_restarts_when_summary_finding_history_changes() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.list_notes = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [],
+            [{"id": 1, "body": "concurrent summary"}],
+            [{"id": 1, "body": "concurrent summary"}],
+        ]
+    )
+    adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[[], [], []]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    concurrent_finding = _make_finding("high")
+    concurrent_metadata = BotMetadata(
+        head_sha="headsha",
+        skill="code-review",
+        version="1.0",
+        unlocated_findings=[concurrent_finding],
+    )
+    first = SkillResult(summary="stale", findings=[concurrent_finding])
+    refreshed = SkillResult(summary="fresh", findings=[])
+
+    async with _stub_review_internals(
+        orchestrator,
+        first,
+        refreshed,
+        metadata_side_effect=[None, concurrent_metadata, concurrent_metadata],
+    ) as review:
+        await orchestrator.review_change_request("5")
+
+    assert review.await_count == 2
+    refreshed_context = review.await_args_list[1].args[1]
+    assert refreshed_context.previous_head_sha == "headsha"
+    assert refreshed_context.previous_unlocated_findings == [concurrent_finding]
+    publish_call = orchestrator.publisher.publish.await_args  # type: ignore[union-attr]
+    assert publish_call.args[1].summary == "fresh"
+    assert publish_call.kwargs["existing_notes"] == [{"id": 1, "body": "concurrent summary"}]
+
+
+@pytest.mark.asyncio
+async def test_review_runtime_aggregation_keeps_incomplete_metrics_unavailable() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [_make_thread("initial")],
+            [_make_thread("updated")],
+            [_make_thread("updated")],
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    first = SkillResult(summary="stale", findings=[]).with_runtime(
+        RuntimeMetadata(input_tokens=10, output_tokens=2, total_tokens=None)
+    )
+    refreshed = SkillResult(summary="fresh", findings=[]).with_runtime(
+        RuntimeMetadata(input_tokens=20, output_tokens=None, total_tokens=23)
+    )
+
+    async with _stub_review_internals(orchestrator, first, refreshed):
+        await orchestrator.review_change_request("5")
+
+    runtime = orchestrator.publisher.publish.await_args.args[1].runtime  # type: ignore[union-attr]
+    assert runtime is not None
+    assert runtime.input_tokens == 30
+    assert runtime.output_tokens is None
+    assert runtime.total_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_custom_publisher_also_refreshes_inline_threads() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [_make_thread("initial")],
+            [_make_thread("updated")],
+            [_make_thread("updated")],
+        ]
+    )
+    custom_publisher = MagicMock()
+    custom_publisher.publish = AsyncMock(return_value=ReviewOutcome(summary="ok"))
+    settings = Settings(
+        git_repo_url="https://gitlab.test/group/project.git",
+        git_repo_token="tok",
+        _env_file=None,
+    )
+    orchestrator = ReviewOrchestrator(
+        adapter=adapter,
+        publisher=custom_publisher,
+        skill_path="skills/code-review",
+        repo_manager=MagicMock(),
+        settings=settings,
+        bound_project_path="group/project",
+    )
+    first = SkillResult(summary="stale", findings=[])
+    refreshed = SkillResult(summary="fresh", findings=[])
+
+    async with _stub_review_internals(orchestrator, first, refreshed) as review:
+        await orchestrator.review_change_request("5")
+
+    assert review.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_inline_threads_change_during_refreshed_review() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [_make_thread("initial")],
+            [_make_thread("first update")],
+            [_make_thread("second update")],
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    first = SkillResult(summary="stale", findings=[])
+    refreshed = SkillResult(summary="still stale", findings=[])
+
+    with pytest.raises(RuntimeError, match="Prior review context changed during review"):
+        async with _stub_review_internals(orchestrator, first, refreshed):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_change_request_head_changes_during_review() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _make_change_request(),
+            _make_change_request(
+                head_sha="new-head",
+                diff_refs={
+                    "base_sha": "new-base",
+                    "start_sha": "new-start",
+                    "head_sha": "new-head",
+                },
+            ),
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="stale", findings=[])
+
+    with pytest.raises(RuntimeError, match="Change request revision changed during review"):
+        async with _stub_review_internals(orchestrator, result):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_change_request_description_changes_during_review() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _make_change_request(description="Initial requirements"),
+            _make_change_request(description="Updated requirements"),
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="stale", findings=[])
+
+    with pytest.raises(RuntimeError, match="Change request revision changed during review"):
+        async with _stub_review_internals(orchestrator, result):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_head_changes_while_refreshing_review_context() -> None:
+    adapter = ApprovalTrackingAdapter()
+    current_cr = _make_change_request()
+    notes_call_count = 0
+
+    async def fetch_change_request(project_ref: str, cr_id: str) -> ChangeRequest:
+        return current_cr
+
+    async def list_notes(project_ref: str, cr_id: str) -> list[dict[str, object]]:
+        nonlocal current_cr, notes_call_count
+        notes_call_count += 1
+        if notes_call_count == 2:
+            current_cr = _make_change_request(
+                head_sha="new-head",
+                diff_refs={
+                    "base_sha": "new-base",
+                    "start_sha": "new-start",
+                    "head_sha": "new-head",
+                },
+            )
+        return []
+
+    adapter.fetch_change_request = AsyncMock(side_effect=fetch_change_request)  # type: ignore[method-assign]
+    adapter.list_notes = AsyncMock(side_effect=list_notes)  # type: ignore[method-assign]
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="stale", findings=[])
+
+    with pytest.raises(RuntimeError, match="Change request revision changed during review"):
+        async with _stub_review_internals(orchestrator, result):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_head_changes_while_refreshing_context_after_rerun() -> None:
+    adapter = ApprovalTrackingAdapter()
+    current_cr = _make_change_request()
+    notes_call_count = 0
+
+    async def fetch_change_request(project_ref: str, cr_id: str) -> ChangeRequest:
+        return current_cr
+
+    async def list_notes(project_ref: str, cr_id: str) -> list[dict[str, object]]:
+        nonlocal current_cr, notes_call_count
+        notes_call_count += 1
+        if notes_call_count == 3:
+            current_cr = _make_change_request(
+                head_sha="new-head",
+                diff_refs={
+                    "base_sha": "new-base",
+                    "start_sha": "new-start",
+                    "head_sha": "new-head",
+                },
+            )
+        return []
+
+    adapter.fetch_change_request = AsyncMock(side_effect=fetch_change_request)  # type: ignore[method-assign]
+    adapter.list_notes = AsyncMock(side_effect=list_notes)  # type: ignore[method-assign]
+    adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [_make_thread("initial")],
+            [_make_thread("updated")],
+            [_make_thread("updated")],
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    first = SkillResult(summary="stale", findings=[])
+    refreshed = SkillResult(summary="still stale", findings=[])
+
+    with pytest.raises(RuntimeError, match="Change request revision changed during review"):
+        async with _stub_review_internals(orchestrator, first, refreshed):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
@@ -439,14 +751,55 @@ async def test_review_preserves_legacy_publisher_contract() -> None:
     publisher = LegacyPublisher()
     orchestrator.publisher = publisher
     orchestrator._platform_publish = False
+    finding = _make_finding("high")
+    finding_fingerprint = compute_fingerprint("code-review", "1.0", finding)
 
     async with _stub_review_internals(
-        orchestrator, SkillResult(summary="ok", findings=[]), stub_publisher=False
+        orchestrator,
+        SkillResult(summary="ok", findings=[finding]),
+        previous_metadata=BotMetadata(
+            skill="code-review",
+            version="1.0",
+            fingerprints={"existing", finding_fingerprint},
+        ),
+        stub_publisher=False,
     ):
         outcome = await orchestrator.review_change_request("5")
 
     assert outcome.summary == "ok"
     assert publisher.calls == 1
+    assert set(publisher.fingerprints) == {
+        "existing",
+        finding_fingerprint,
+    }
+    assert publisher.findings == []
+
+
+@pytest.mark.asyncio
+async def test_platform_publisher_filters_legacy_metadata_during_schema_migration() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator(adapter)
+    finding = _make_finding("high")
+    finding_fingerprint = compute_fingerprint("code-review", "1.0", finding)
+
+    async with _stub_review_internals(
+        orchestrator,
+        SkillResult(summary="ok", findings=[finding]),
+        previous_metadata=BotMetadata(
+            schema_version=1,
+            skill="code-review",
+            version="1.0",
+            fingerprints={finding_fingerprint},
+        ),
+    ):
+        await orchestrator.review_change_request("5")
+
+    published_result = orchestrator.publisher.publish.await_args.args[1]  # type: ignore[union-attr]
+    assert published_result.findings == []
+    assert orchestrator.publisher.publish.await_args.kwargs["metadata_findings"] == [  # type: ignore[union-attr]
+        finding
+    ]
+    assert adapter.approve_calls == [("1", "5", "headsha")]
 
 
 @pytest.mark.asyncio
@@ -528,6 +881,53 @@ async def test_review_pins_workspace_to_change_request_diff_refs() -> None:
         source_sha="headsha",
         target_sha="start",
     )
+    publish_call = orchestrator.publisher.publish.await_args  # type: ignore[union-attr]
+    assert publish_call.args[4] is None
+    assert publish_call.kwargs["existing_notes"] == []
+
+
+@pytest.mark.asyncio
+async def test_review_passes_previous_unlocated_findings_to_agent() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator(adapter)
+    previous_finding = _make_finding("high")
+    result = SkillResult(summary="ok", findings=[])
+
+    async with _stub_review_internals(
+        orchestrator,
+        result,
+        previous_metadata=BotMetadata(
+            skill="code-review",
+            version="1.0",
+            unlocated_findings=[previous_finding],
+        ),
+    ) as review:
+        await orchestrator.review_change_request("5")
+
+    task_context = review.await_args.args[1]
+    assert task_context.previous_unlocated_findings == [previous_finding]
+
+
+@pytest.mark.asyncio
+async def test_review_drops_previous_unlocated_findings_for_different_skill_version() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator(adapter)
+    previous_finding = _make_finding("high")
+    result = SkillResult(summary="ok", findings=[])
+
+    async with _stub_review_internals(
+        orchestrator,
+        result,
+        previous_metadata=BotMetadata(
+            skill="other-skill",
+            version="old",
+            unlocated_findings=[previous_finding],
+        ),
+    ) as review:
+        await orchestrator.review_change_request("5")
+
+    task_context = review.await_args.args[1]
+    assert task_context.previous_unlocated_findings == []
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,15 @@ def test_github_actions_publishes_agent_tags_from_shared_dockerfile() -> None:
     assert "cache-to: type=gha,mode=max,scope=${{ matrix.tag }}" in workflow
 
 
+def test_code_review_workflow_forwards_metadata_author_id_to_container() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "code-review.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "REVIEW_METADATA_AUTHOR_ID:" in workflow
+    assert "-e REVIEW_METADATA_AUTHOR_ID" in workflow
+
+
 def test_env_example_defaults_to_claude_agent() -> None:
     env_example = (_REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     active_settings = dict(

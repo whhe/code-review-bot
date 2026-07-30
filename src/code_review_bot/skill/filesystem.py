@@ -90,10 +90,8 @@ class RemoteUrlSkill:
     def __init__(self, url: str) -> None:
         self.url = url
         self.name = _name_from_url(url)
-        # Version is URL-derived, not content-derived. If the remote skill
-        # content changes without a URL change, fingerprints from prior runs
-        # remain valid and new findings may be incorrectly deduplicated.
-        # To force a full re-review, change the URL (e.g. add ?v=2).
+        # Version is URL-derived, not content-derived. Change the URL
+        # (for example, add ?v=2) when the displayed version must change.
         self.version = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
 
     @property
@@ -233,6 +231,11 @@ def build_review_prompt(
         "<mr_description>\n"
         f"{_truncate_description(cr.description or '(none)')}"
         "\n</mr_description>\n"
+        f"{
+            _format_previous_unlocated_findings_section(
+                getattr(context, 'previous_unlocated_findings', [])
+            )
+        }"
         f"{_format_inline_threads_section(getattr(context, 'inline_threads', []))}"
     )
 
@@ -263,14 +266,23 @@ def _format_inline_threads_section(threads: list[object]) -> str:
         "\n<inline_threads>",
         "## Existing inline review comments",
         "",
-        "Apply these rules when deciding whether to re-report an issue:",
+        "Existing inline threads are previously reported issues, not new findings.",
+        "Before producing the final JSON:",
+        "1. Compare every candidate finding with every existing inline thread.",
+        "2. Omit a candidate only when it is the same defect instance in the same affected "
+        "behavior or call path as an existing thread, regardless of wording, severity, "
+        "line movement, or thread status. Similar root-cause patterns, impacts, severities, "
+        "or required changes alone are not enough to treat findings as duplicates; issues at "
+        "different code locations that each require a separate code change must remain separate "
+        "findings.",
+        "3. An unresolved existing issue must remain in its original thread; "
+        "you must not create a new finding for it.",
+        "4. Re-report only when the previous issue was demonstrably fixed and the current "
+        "change introduces it again as a new regression.",
+        "",
         "- **Explicit no-action**: if any reply clearly states the issue will not be fixed, "
         "is intentional, or requires no change — do not report it as a finding; "
         "briefly note it in the overall summary instead.",
-        "- **Resolved but incomplete fix**: if a thread is platform-resolved but you find "
-        "the issue still exists in the code — still report it as a finding, unless a reply "
-        "explicitly states no action is needed.",
-        "- **Open threads**: apply normal review judgment.",
         "",
     ]
 
@@ -289,6 +301,38 @@ def _format_inline_threads_section(threads: list[object]) -> str:
             lines.append("  *(no replies)*")
 
     lines.append("</inline_threads>")
+    return "\n".join(lines)
+
+
+def _format_previous_unlocated_findings_section(findings: list[object]) -> str:
+    if not findings:
+        return ""
+
+    lines = [
+        "\n<previous_summary_findings>",
+        "## Previously reported summary-only findings",
+        "",
+        "These issues were previously published only in a review summary because no inline "
+        "thread could be created.",
+        "Compare every candidate finding with each item below. Omit it only when it is the same "
+        "defect instance in the same affected behavior or call path.",
+        "Similar root-cause patterns, impacts, severities, or required changes alone are not "
+        "enough to treat findings as duplicates; independent issues must remain separate findings.",
+        "Re-report the issue when it was demonstrably fixed and the current change introduces it "
+        "again as a new regression.",
+        "",
+    ]
+    for finding in findings:
+        file_path = getattr(finding, "file_path", "")
+        line_range = getattr(finding, "line_range", "")
+        severity = getattr(finding, "severity", "")
+        description = getattr(finding, "description", "")
+        reason = getattr(finding, "reason", "")
+        lines.append(f"- `{file_path}:{line_range}` *({severity}, summary-only)*: {description}")
+        if reason:
+            lines.append(f"  Reason: {reason}")
+
+    lines.append("</previous_summary_findings>")
     return "\n".join(lines)
 
 

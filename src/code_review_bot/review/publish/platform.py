@@ -28,12 +28,17 @@ class PlatformPublisher:
         result: SkillResult,
         skill_name: str,
         skill_version: str,
-        fingerprints: list[str],
+        fingerprints: list[str] | None = None,
         existing_notes: list[dict[str, object]] | None = None,
         resolved_findings: list[Finding] | None = None,
+        metadata_findings: list[Finding] | None = None,
         publish_summary: bool = True,
     ) -> ReviewOutcome:
         located_count, unlocated = await self._publish_inline(cr, result.findings)
+        metadata_history = list(unlocated)
+        for finding in metadata_findings or []:
+            if finding not in metadata_history:
+                metadata_history.append(finding)
         severity_counts = count_findings_by_severity(result.findings)
         body = format_review_note(
             cr=cr,
@@ -45,6 +50,7 @@ class PlatformPublisher:
             skill_name=skill_name,
             skill_version=skill_version,
             fingerprints=fingerprints,
+            metadata_findings=metadata_history,
             runtime=result.runtime,
         )
         if publish_summary:

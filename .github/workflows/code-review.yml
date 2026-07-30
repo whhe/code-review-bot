@@ -33,6 +33,7 @@ jobs:
           GIT_PLATFORM_TYPE: github
           GIT_REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
           GIT_REPO_TOKEN: ${{ secrets.CODE_REVIEW_GITHUB_TOKEN || github.token }}
+          REVIEW_METADATA_AUTHOR_ID: ${{ secrets.CODE_REVIEW_GITHUB_USER_ID || '41898282' }}
           LOG_LEVEL: DEBUG
           OPENCODE_UPSTREAM_ENDPOINT: ${{ vars.OPENCODE_UPSTREAM_ENDPOINT }}
           OPENCODE_UPSTREAM_API_KEY: ${{ secrets.OPENCODE_UPSTREAM_API_KEY }}
@@ -56,6 +57,7 @@ jobs:
             -e GIT_PLATFORM_TYPE \
             -e GIT_REPO_URL \
             -e GIT_REPO_TOKEN \
+            -e REVIEW_METADATA_AUTHOR_ID \
             -e LOG_LEVEL \
             -e OPENCODE_UPSTREAM_ENDPOINT \
             -e OPENCODE_UPSTREAM_API_KEY \

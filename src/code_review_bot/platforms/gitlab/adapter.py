@@ -11,8 +11,10 @@ class GitLabAdapter:
 
     platform_name = "gitlab"
 
-    def __init__(self, client: GitLabClient) -> None:
+    def __init__(self, client: GitLabClient, metadata_author_id: str = "") -> None:
         self._client = client
+        self._configured_metadata_author_id = metadata_author_id
+        self._resolved_metadata_author_id: str | None = None
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -26,7 +28,25 @@ class GitLabAdapter:
         return _parse_change_request(data, project_ref, cr_id)
 
     async def list_notes(self, project_ref: str, cr_id: str) -> list[dict[str, object]]:
-        return await self._client.list_merge_request_notes(int(project_ref), int(cr_id))
+        notes = await self._client.list_merge_request_notes(int(project_ref), int(cr_id))
+        metadata_author_id = await self._get_metadata_author_id()
+        return [note for note in notes if _gitlab_note_author_id(note) == metadata_author_id]
+
+    async def _get_metadata_author_id(self) -> str:
+        if self._resolved_metadata_author_id is not None:
+            return self._resolved_metadata_author_id
+        if self._configured_metadata_author_id:
+            self._resolved_metadata_author_id = self._configured_metadata_author_id
+            return self._resolved_metadata_author_id
+        user = await self._client.get_authenticated_user()
+        author_id = str(user.get("id") or "")
+        if not author_id:
+            raise RuntimeError(
+                "GitLab authenticated user response is missing id; "
+                "set REVIEW_METADATA_AUTHOR_ID explicitly"
+            )
+        self._resolved_metadata_author_id = author_id
+        return author_id
 
     async def list_inline_threads(self, project_ref: str, cr_id: str) -> list[InlineThread]:
         discussions = await self._client.list_merge_request_discussions(
@@ -116,3 +136,10 @@ def _parse_change_request(
         head_sha=head_sha,
         diff_refs=diff_refs,
     )
+
+
+def _gitlab_note_author_id(note: dict[str, object]) -> str:
+    author = note.get("author")
+    if not isinstance(author, dict):
+        return ""
+    return str(author.get("id") or "")

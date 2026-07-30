@@ -16,7 +16,7 @@ class ReviewPublisher(Protocol):
         result: SkillResult,
         skill_name: str,
         skill_version: str,
-        fingerprints: list[str],
+        fingerprints: list[str] | None = None,
         existing_notes: list[dict[str, object]] | None = None,
         resolved_findings: list[Finding] | None = None,
     ) -> ReviewOutcome: ...

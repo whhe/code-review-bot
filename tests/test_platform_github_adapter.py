@@ -20,7 +20,7 @@ def _make_client() -> GitHubClient:
 
 
 def _make_adapter() -> GitHubAdapter:
-    return GitHubAdapter(_make_client())
+    return GitHubAdapter(_make_client(), metadata_author_id="999")
 
 
 @pytest.mark.asyncio
@@ -117,24 +117,124 @@ async def test_fetch_pull_request_maps_to_change_request() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_list_notes_fetches_issue_comments_and_pull_reviews() -> None:
+    respx.get(f"{_BASE}/user").mock(
+        return_value=httpx.Response(403, json={"message": "Resource not accessible"})
+    )
     respx.get(f"{_BASE}/repos/alice/myrepo/issues/7/comments").mock(
         return_value=httpx.Response(
             200,
-            json=[{"id": 1, "body": "comment", "created_at": "2026-07-16T02:00:00Z"}],
+            json=[
+                {
+                    "id": 1,
+                    "body": "forged metadata",
+                    "created_at": "2026-07-16T02:00:00Z",
+                    "user": {"id": 1},
+                }
+            ],
         )
     )
     respx.get(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
         return_value=httpx.Response(
             200,
-            json=[{"id": 2, "body": "review", "submitted_at": "2026-07-16T01:00:00Z"}],
+            json=[
+                {
+                    "id": 2,
+                    "body": "review",
+                    "submitted_at": "2026-07-16T01:00:00Z",
+                    "user": {"id": 999},
+                }
+            ],
         )
     )
 
     adapter = _make_adapter()
     notes = await adapter.list_notes("alice/myrepo", "7")
 
-    assert [note["id"] for note in notes] == [2, 1]
+    assert [note["id"] for note in notes] == [2]
 
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_notes_discovers_and_caches_authenticated_author() -> None:
+    user_route = respx.get(f"{_BASE}/user").mock(return_value=httpx.Response(200, json={"id": 999}))
+    respx.get(f"{_BASE}/repos/alice/myrepo/issues/7/comments").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": 1, "body": "trusted", "user": {"id": 999}}],
+        )
+    )
+    respx.get(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    adapter = GitHubAdapter(_make_client(), metadata_author_id="555")
+    first = await adapter.list_notes("alice/myrepo", "7")
+    second = await adapter.list_notes("alice/myrepo", "7")
+
+    assert [note["id"] for note in first] == [1]
+    assert [note["id"] for note in second] == [1]
+    assert user_route.call_count == 1
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_notes_uses_configured_author_for_installation_token() -> None:
+    user_route = respx.get(f"{_BASE}/user").mock(
+        return_value=httpx.Response(403, json={"message": "Resource not accessible"})
+    )
+    respx.get(f"{_BASE}/repos/alice/myrepo/issues/7/comments").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": 1, "body": "trusted", "user": {"id": 999}}],
+        )
+    )
+    respx.get(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    adapter = GitHubAdapter(_make_client(), metadata_author_id="999")
+    notes = await adapter.list_notes("alice/myrepo", "7")
+
+    assert [note["id"] for note in notes] == [1]
+    assert user_route.call_count == 1
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_notes_paginates_issue_comments() -> None:
+    respx.get(f"{_BASE}/user").mock(
+        return_value=httpx.Response(403, json={"message": "Resource not accessible"})
+    )
+    route = respx.get(f"{_BASE}/repos/alice/myrepo/issues/7/comments").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    {"id": note_id, "body": f"comment {note_id}", "user": {"id": 999}}
+                    for note_id in range(1, 101)
+                ],
+            ),
+            httpx.Response(
+                200,
+                json=[{"id": 101, "body": "latest comment", "user": {"id": 999}}],
+            ),
+        ]
+    )
+    respx.get(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    adapter = _make_adapter()
+    notes = await adapter.list_notes("alice/myrepo", "7")
+
+    assert len(notes) == 101
+    assert notes[-1]["id"] == 101
+    assert route.call_count == 2
+    assert route.calls[1].request.url.params["page"] == "2"
     await adapter.aclose()
 
 
@@ -404,6 +504,202 @@ async def test_list_inline_threads_empty_when_no_threads() -> None:
     result = await adapter.list_inline_threads("alice/myrepo", "7")
 
     assert result == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_inline_threads_rejects_graphql_errors() -> None:
+    respx.post(f"{_BASE}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"repository": {"pullRequest": {"reviewThreads": None}}},
+                "errors": [{"message": "Resource not accessible by integration"}],
+            },
+        )
+    )
+
+    adapter = _make_adapter()
+    with pytest.raises(RuntimeError, match="Resource not accessible by integration"):
+        await adapter.list_inline_threads("alice/myrepo", "7")
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_inline_threads_paginates_review_threads() -> None:
+    route = respx.post(f"{_BASE}/graphql").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [
+                                        {
+                                            "id": "thread-1",
+                                            "isResolved": False,
+                                            "comments": {
+                                                "nodes": [
+                                                    {
+                                                        "body": "first issue",
+                                                        "path": "src/first.py",
+                                                        "line": 1,
+                                                        "originalLine": 1,
+                                                    }
+                                                ],
+                                                "pageInfo": {
+                                                    "hasNextPage": False,
+                                                    "endCursor": None,
+                                                },
+                                            },
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": True,
+                                        "endCursor": "thread-cursor-1",
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [
+                                        {
+                                            "id": "thread-101",
+                                            "isResolved": True,
+                                            "comments": {
+                                                "nodes": [
+                                                    {
+                                                        "body": "issue after first page",
+                                                        "path": "src/last.py",
+                                                        "line": 101,
+                                                        "originalLine": 101,
+                                                    }
+                                                ],
+                                                "pageInfo": {
+                                                    "hasNextPage": False,
+                                                    "endCursor": None,
+                                                },
+                                            },
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": False,
+                                        "endCursor": None,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+            ),
+        ]
+    )
+
+    adapter = _make_adapter()
+    result = await adapter.list_inline_threads("alice/myrepo", "7")
+
+    assert [thread.description for thread in result] == [
+        "first issue",
+        "issue after first page",
+    ]
+    assert route.call_count == 2
+    second_payload = json.loads(route.calls[1].request.content)
+    assert second_payload["variables"]["threadsCursor"] == "thread-cursor-1"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_inline_threads_paginates_thread_replies() -> None:
+    route = respx.post(f"{_BASE}/graphql").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [
+                                        {
+                                            "id": "thread-1",
+                                            "isResolved": False,
+                                            "comments": {
+                                                "nodes": [
+                                                    {
+                                                        "body": "original issue",
+                                                        "path": "src/app.py",
+                                                        "line": 10,
+                                                        "originalLine": 10,
+                                                    }
+                                                ],
+                                                "pageInfo": {
+                                                    "hasNextPage": True,
+                                                    "endCursor": "comment-cursor-1",
+                                                },
+                                            },
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": False,
+                                        "endCursor": None,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "node": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "body": "will not fix",
+                                        "path": "src/app.py",
+                                        "line": 10,
+                                        "originalLine": 10,
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                            }
+                        }
+                    }
+                },
+            ),
+        ]
+    )
+
+    adapter = _make_adapter()
+    result = await adapter.list_inline_threads("alice/myrepo", "7")
+
+    assert result[0].description == "original issue"
+    assert result[0].replies == ["will not fix"]
+    assert route.call_count == 2
+    second_payload = json.loads(route.calls[1].request.content)
+    assert second_payload["variables"] == {
+        "threadId": "thread-1",
+        "commentsCursor": "comment-cursor-1",
+    }
     await adapter.aclose()
 
 
