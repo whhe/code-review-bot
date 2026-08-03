@@ -9,7 +9,11 @@ from code_review_bot.skill.protocol import Finding
 
 logger = logging.getLogger(__name__)
 
-METADATA_RE = re.compile(r"<!-- code-review-bot:(?P<json>\{.*?\}) -->", re.DOTALL)
+BOT_METADATA_PREFIX = "<!-- code-review-bot:"
+METADATA_RE = re.compile(
+    rf"{re.escape(BOT_METADATA_PREFIX)}(?P<json>\{{.*?\}}) -->",
+    re.DOTALL,
+)
 MAX_FINDING_HISTORY_CHARS = 30_000
 MAX_FINDING_HISTORY_ITEMS = 50
 MAX_METADATA_FINDING_TEXT_CHARS = 4_000
@@ -36,7 +40,8 @@ def extract_metadata(
     parsed: list[BotMetadata] = []
     for note in notes:
         body = str(note.get("body") or "")
-        match = METADATA_RE.search(body)
+        marker_index = body.rfind(BOT_METADATA_PREFIX)
+        match = METADATA_RE.fullmatch(body[marker_index:].strip()) if marker_index >= 0 else None
         if not match:
             continue
         try:
@@ -60,14 +65,16 @@ def extract_metadata(
     latest = matching[-1]
     merged_fingerprints: set[str] = set()
     newest_findings: list[Finding] = []
-    seen_finding_identities: set[tuple[str, str, str, str, str, str, str, int]] = set()
+    seen_finding_identities: set[tuple[str, str, str, str, str, str, int]] = set()
     for metadata in matching:
         if metadata.skill != latest.skill or metadata.version != latest.version:
             continue
         merged_fingerprints.update(metadata.fingerprints)
     for metadata in reversed(matching):
+        if metadata.skill != latest.skill or metadata.version != latest.version:
+            continue
         for finding in reversed(metadata.unlocated_findings):
-            identity = _finding_identity(finding)
+            identity = finding_identity(finding)
             if identity in seen_finding_identities:
                 continue
             seen_finding_identities.add(identity)
@@ -84,7 +91,9 @@ def limit_finding_history(findings: list[Finding]) -> list[Finding]:
     candidates = findings[-MAX_FINDING_HISTORY_ITEMS:]
     for finding in reversed(candidates):
         compacted = _compact_metadata_finding(finding)
-        serialized = json.dumps(compacted.model_dump(mode="json"), separators=(",", ":"))
+        serialized = json.dumps(
+            compacted.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
+        )
         serialized = serialized.replace("--", r"\u002d\u002d")
         additional_chars = len(serialized) + (1 if retained_reversed else 0)
         if used_chars + additional_chars > MAX_FINDING_HISTORY_CHARS:
@@ -105,18 +114,19 @@ def limit_finding_history(findings: list[Finding]) -> list[Finding]:
     return retained
 
 
-def _finding_identity(
+def finding_identity(
     finding: Finding,
-) -> tuple[str, str, str, str, str, str, str, int]:
+) -> tuple[str, str, str, str, str, str, int]:
+    """Return the identity of the Finding's final persisted representation."""
+    persisted = _compact_metadata_finding(finding)
     return (
-        finding.severity,
-        finding.description,
-        finding.file_path,
-        finding.line_range,
-        finding.anchor_text,
-        finding.legacy_anchor_text,
-        finding.reason,
-        finding.confidence,
+        persisted.severity,
+        persisted.description,
+        persisted.file_path,
+        persisted.line_range,
+        persisted.anchor_text,
+        persisted.reason,
+        persisted.confidence,
     )
 
 

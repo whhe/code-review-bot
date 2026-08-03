@@ -5,6 +5,7 @@ import re
 
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition
 from code_review_bot.platforms.protocol import PlatformAdapter
+from code_review_bot.review.context import finding_identity
 from code_review_bot.review.models import ReviewOutcome
 from code_review_bot.review.publish.formatter import SEVERITY_LABELS, format_review_note
 from code_review_bot.skill.protocol import Finding, SkillResult, count_findings_by_severity
@@ -35,10 +36,16 @@ class PlatformPublisher:
         publish_summary: bool = True,
     ) -> ReviewOutcome:
         located_count, unlocated = await self._publish_inline(cr, result.findings)
-        metadata_history = list(unlocated)
-        for finding in metadata_findings or []:
-            if finding not in metadata_history:
-                metadata_history.append(finding)
+        metadata_history_reversed: list[Finding] = []
+        metadata_identities: set[tuple[str, str, str, str, str, str, int]] = set()
+        candidates = [*(metadata_findings or []), *unlocated]
+        for finding in reversed(candidates):
+            identity = finding_identity(finding)
+            if identity in metadata_identities:
+                continue
+            metadata_identities.add(identity)
+            metadata_history_reversed.append(finding)
+        metadata_history = list(reversed(metadata_history_reversed))
         severity_counts = count_findings_by_severity(result.findings)
         body = format_review_note(
             cr=cr,

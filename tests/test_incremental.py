@@ -220,6 +220,37 @@ def test_extract_metadata_deduplicates_without_quadratic_finding_equality(
     assert descriptions[-1] == "issue 99"
 
 
+def test_extract_metadata_deduplicates_legacy_full_and_compacted_findings() -> None:
+    legacy_full = Finding(
+        severity="medium",
+        description="d" * 5_000,
+        file_path="src/a.py",
+        line_range="10",
+        anchor_text="anchor",
+        reason="reason",
+        confidence=80,
+    )
+    compacted = limit_finding_history([legacy_full])[0]
+
+    def note(note_id: int, finding: Finding) -> dict[str, object]:
+        payload = {
+            "schema_version": 2,
+            "head_sha": "head",
+            "skill": "default",
+            "version": "1",
+            "unlocated_findings": [finding.model_dump(mode="json")],
+        }
+        return {
+            "id": note_id,
+            "body": "<!-- code-review-bot:" + json.dumps(payload, separators=(",", ":")) + " -->",
+        }
+
+    metadata = extract_metadata([note(1, legacy_full), note(2, compacted)])
+
+    assert metadata is not None
+    assert metadata.unlocated_findings == [compacted]
+
+
 def test_finding_history_warning_describes_all_retention_drops(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -273,6 +304,41 @@ def test_extract_metadata_selects_history_for_requested_skill_version() -> None:
     assert metadata.skill == "skill-a"
     assert metadata.head_sha == "head-2"
     assert [finding.description for finding in metadata.unlocated_findings] == ["skill A issue"]
+
+
+def test_extract_metadata_isolates_history_to_latest_skill_version_without_full_filters() -> None:
+    def metadata_body(skill: str, version: str, description: str) -> str:
+        return (
+            '<!-- code-review-bot:{"head_sha":"head","skill":"'
+            + skill
+            + '","version":"'
+            + version
+            + '","unlocated_findings":[{"severity":"high","description":"'
+            + description
+            + '","file_path":"src/a.py","line_range":"1","anchor_text":"",'
+            '"reason":"reason","confidence":90}]} -->'
+        )
+
+    notes = [
+        {"id": 1, "body": metadata_body("skill-a", "1", "skill A v1 issue")},
+        {"id": 2, "body": metadata_body("skill-b", "1", "skill B issue")},
+        {"id": 3, "body": metadata_body("skill-a", "2", "skill A v2 issue")},
+    ]
+
+    unfiltered = extract_metadata(notes)
+    skill_filtered = extract_metadata(notes, skill_name="skill-a")
+
+    assert unfiltered is not None
+    assert unfiltered.skill == "skill-a"
+    assert unfiltered.version == "2"
+    assert [finding.description for finding in unfiltered.unlocated_findings] == [
+        "skill A v2 issue"
+    ]
+    assert skill_filtered is not None
+    assert skill_filtered.version == "2"
+    assert [finding.description for finding in skill_filtered.unlocated_findings] == [
+        "skill A v2 issue"
+    ]
 
 
 def test_extract_metadata_returns_none_when_no_comment() -> None:

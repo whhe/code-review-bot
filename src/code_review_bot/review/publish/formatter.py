@@ -4,10 +4,9 @@ import hashlib
 import json
 
 from code_review_bot.platforms.models import ChangeRequest
-from code_review_bot.review.context import limit_finding_history
+from code_review_bot.review.context import BOT_METADATA_PREFIX, limit_finding_history
 from code_review_bot.skill.protocol import Finding, RuntimeMetadata, count_findings_by_severity
 
-BOT_METADATA_PREFIX = "<!-- code-review-bot:"
 CODE_REVIEW_BOT_LABEL = "whhe/code-review-bot"
 CODE_REVIEW_BOT_URL = "https://github.com/whhe/code-review-bot"
 MAX_REVIEW_NOTE_CHARS = 60_000
@@ -126,7 +125,9 @@ def format_review_note(
     }
     if fingerprints is not None:
         metadata["fingerprints"] = _limit_legacy_fingerprints(fingerprints)
-    metadata_json = json.dumps(metadata, separators=(",", ":")).replace("--", r"\u002d\u002d")
+    metadata_json = json.dumps(metadata, separators=(",", ":"), ensure_ascii=False).replace(
+        "--", r"\u002d\u002d"
+    )
     suffix = "\n".join(
         [
             _format_attribution_line(runtime, skill_version),
