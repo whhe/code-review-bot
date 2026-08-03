@@ -705,6 +705,125 @@ async def test_list_inline_threads_paginates_thread_replies() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_list_inline_threads_handles_deleted_thread_during_comment_pagination() -> None:
+    route = respx.post(f"{_BASE}/graphql").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [
+                                        {
+                                            "id": "thread-1",
+                                            "isResolved": False,
+                                            "comments": {
+                                                "nodes": [
+                                                    {
+                                                        "body": "original issue",
+                                                        "path": "src/app.py",
+                                                        "line": 10,
+                                                        "originalLine": 10,
+                                                    }
+                                                ],
+                                                "pageInfo": {
+                                                    "hasNextPage": True,
+                                                    "endCursor": "comment-cursor-1",
+                                                },
+                                            },
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": False,
+                                        "endCursor": None,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+            ),
+            httpx.Response(200, json={"data": {"node": None}}),
+        ]
+    )
+
+    adapter = _make_adapter()
+    result = await adapter.list_inline_threads("alice/myrepo", "7")
+
+    assert [thread.description for thread in result] == ["original issue"]
+    assert result[0].replies == []
+    assert route.call_count == 2
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "second_page_data",
+    [
+        {"repository": None},
+        {"repository": {"pullRequest": None}},
+        {"repository": {"pullRequest": {"reviewThreads": None}}},
+    ],
+)
+@respx.mock
+async def test_list_inline_threads_handles_missing_connection_during_thread_pagination(
+    second_page_data: dict[str, object],
+) -> None:
+    route = respx.post(f"{_BASE}/graphql").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [
+                                        {
+                                            "id": "thread-1",
+                                            "isResolved": False,
+                                            "comments": {
+                                                "nodes": [
+                                                    {
+                                                        "body": "original issue",
+                                                        "path": "src/app.py",
+                                                        "line": 10,
+                                                        "originalLine": 10,
+                                                    }
+                                                ],
+                                                "pageInfo": {
+                                                    "hasNextPage": False,
+                                                    "endCursor": None,
+                                                },
+                                            },
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": True,
+                                        "endCursor": "thread-cursor-1",
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+            ),
+            httpx.Response(200, json={"data": second_page_data}),
+        ]
+    )
+
+    adapter = _make_adapter()
+    result = await adapter.list_inline_threads("alice/myrepo", "7")
+
+    assert [thread.description for thread in result] == ["original issue"]
+    assert route.call_count == 2
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_approve_change_request_with_body_submits_approve_review() -> None:
     route = respx.post(f"{_BASE}/repos/alice/myrepo/pulls/7/reviews").mock(
         return_value=httpx.Response(200, json={"id": 1, "state": "APPROVED"})

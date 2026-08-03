@@ -159,12 +159,9 @@ class GitHubClient:
                 },
             )
             response.raise_for_status()
-            connection = (
-                _graphql_data(response)
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("reviewThreads", {})
-            )
+            repository = _graphql_data(response).get("repository") or {}
+            pull_request = repository.get("pullRequest") or {}
+            connection = pull_request.get("reviewThreads") or {}
             page_threads = list(connection.get("nodes") or [])
             for thread in page_threads:
                 await self._load_remaining_thread_comments(thread, comments_query)
@@ -203,7 +200,8 @@ class GitHubClient:
                 },
             )
             response.raise_for_status()
-            connection = _graphql_data(response).get("node", {}).get("comments", {})
+            node = _graphql_data(response).get("node") or {}
+            connection = node.get("comments") or {}
             nodes.extend(connection.get("nodes") or [])
             page_info = connection.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
