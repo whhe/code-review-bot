@@ -49,7 +49,7 @@ whhe/code-review-bot:opencode
 
 Each target persists its matching `ACP_AGENT_TYPE`. Both variants leave `ACP_COMMAND` and
 `ACP_ARGS` unset. Built-in presets start Claude through
-`npx -y @zed-industries/claude-agent-acp` and OpenCode through `opencode acp`. Agent-specific
+`npx -y @agentclientprotocol/claude-agent-acp` and OpenCode through `opencode acp`. Agent-specific
 Docker stages ensure Claude images do not contain OpenCode-only environment defaults.
 
 `:latest` and `:claude-code` are aliases for the same Claude image. OpenCode is published only as

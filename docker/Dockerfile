@@ -82,7 +82,7 @@ USER root
 ARG NPM_CONFIG_REGISTRY
 RUN set -eu; \
     if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi; \
-    npm install -g @zed-industries/claude-agent-acp; \
+    npm install -g @agentclientprotocol/claude-agent-acp; \
     npm list -g --depth=0
 USER appuser
 ENV ACP_AGENT_TYPE=claude

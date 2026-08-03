@@ -14,7 +14,7 @@ def test_is_builtin() -> None:
 def test_builtin_uses_preset() -> None:
     command, args = resolve_acp_launcher("codex")
     assert command == "npx"
-    assert args == ["-y", "@zed-industries/codex-acp"]
+    assert args == ["-y", "@agentclientprotocol/codex-acp"]
 
 
 def test_opencode_is_builtin_and_uses_native_acp() -> None:
