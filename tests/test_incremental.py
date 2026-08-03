@@ -1,7 +1,14 @@
 import json
+import logging
 from types import SimpleNamespace
 
-from code_review_bot.review.context import compute_fingerprint, extract_metadata
+import pytest
+
+from code_review_bot.review.context import (
+    compute_fingerprint,
+    extract_metadata,
+    limit_finding_history,
+)
 from code_review_bot.skill.protocol import Finding
 
 
@@ -145,6 +152,95 @@ def test_extract_metadata_bounds_history_while_retaining_newest_findings() -> No
     assert metadata is not None
     assert len(metadata.unlocated_findings) < len(findings)
     assert metadata.unlocated_findings[-1] == findings[-1]
+
+
+def test_extract_metadata_deduplicates_without_quadratic_finding_equality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    equality_calls = 0
+    original_eq = Finding.__eq__
+
+    def counting_eq(self: Finding, other: object) -> bool:
+        nonlocal equality_calls
+        equality_calls += 1
+        return original_eq(self, other)
+
+    monkeypatch.setattr(Finding, "__eq__", counting_eq)
+    notes = []
+    for index in range(100):
+        finding = Finding(
+            severity="medium",
+            description=f"issue {index}",
+            file_path=f"src/{index}.py",
+            line_range=str(index + 1),
+            anchor_text="anchor",
+            reason="reason",
+            confidence=80,
+        )
+        payload = {
+            "schema_version": 2,
+            "head_sha": "head",
+            "skill": "default",
+            "version": "1",
+            "unlocated_findings": [finding.model_dump(mode="json")],
+        }
+        notes.append(
+            {
+                "id": index + 1,
+                "body": (
+                    "<!-- code-review-bot:" + json.dumps(payload, separators=(",", ":")) + " -->"
+                ),
+            }
+        )
+    duplicate_payload = {
+        "schema_version": 2,
+        "head_sha": "head",
+        "skill": "default",
+        "version": "1",
+        "unlocated_findings": [finding.model_dump(mode="json")],
+    }
+    notes.append(
+        {
+            "id": 101,
+            "body": (
+                "<!-- code-review-bot:"
+                + json.dumps(duplicate_payload, separators=(",", ":"))
+                + " -->"
+            ),
+        }
+    )
+
+    metadata = extract_metadata(notes)
+
+    assert metadata is not None
+    assert equality_calls < 500
+    descriptions = [finding.description for finding in metadata.unlocated_findings]
+    assert len(descriptions) == 50
+    assert descriptions.count("issue 99") == 1
+    assert descriptions[-1] == "issue 99"
+
+
+def test_finding_history_warning_describes_all_retention_drops(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    findings = [
+        Finding(
+            severity="low",
+            description=f"issue {index}",
+            file_path="src/a.py",
+            line_range=str(index),
+            anchor_text="",
+            reason="reason",
+            confidence=70,
+        )
+        for index in range(51)
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        retained = limit_finding_history(findings)
+
+    assert len(retained) == 50
+    assert "Dropped 1 review metadata findings outside the retention budgets" in caplog.text
 
 
 def test_extract_metadata_selects_history_for_requested_skill_version() -> None:

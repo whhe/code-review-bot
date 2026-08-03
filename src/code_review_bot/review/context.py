@@ -60,14 +60,18 @@ def extract_metadata(
     latest = matching[-1]
     merged_fingerprints: set[str] = set()
     newest_findings: list[Finding] = []
+    seen_finding_identities: set[tuple[str, str, str, str, str, str, str, int]] = set()
     for metadata in matching:
         if metadata.skill != latest.skill or metadata.version != latest.version:
             continue
         merged_fingerprints.update(metadata.fingerprints)
     for metadata in reversed(matching):
         for finding in reversed(metadata.unlocated_findings):
-            if finding not in newest_findings:
-                newest_findings.append(finding)
+            identity = _finding_identity(finding)
+            if identity in seen_finding_identities:
+                continue
+            seen_finding_identities.add(identity)
+            newest_findings.append(finding)
     latest.fingerprints = merged_fingerprints
     latest.unlocated_findings = limit_finding_history(list(reversed(newest_findings)))
     return latest
@@ -92,11 +96,28 @@ def limit_finding_history(findings: list[Finding]) -> list[Finding]:
     dropped = len(findings) - len(retained)
     if dropped:
         logger.warning(
-            "Dropped %s older review metadata findings to stay within %s characters",
+            "Dropped %s review metadata findings outside the retention budgets "
+            "(max_items=%s, max_chars=%s)",
             dropped,
+            MAX_FINDING_HISTORY_ITEMS,
             MAX_FINDING_HISTORY_CHARS,
         )
     return retained
+
+
+def _finding_identity(
+    finding: Finding,
+) -> tuple[str, str, str, str, str, str, str, int]:
+    return (
+        finding.severity,
+        finding.description,
+        finding.file_path,
+        finding.line_range,
+        finding.anchor_text,
+        finding.legacy_anchor_text,
+        finding.reason,
+        finding.confidence,
+    )
 
 
 def _compact_metadata_finding(finding: Finding) -> Finding:
