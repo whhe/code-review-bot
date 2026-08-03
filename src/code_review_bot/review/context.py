@@ -91,10 +91,7 @@ def limit_finding_history(findings: list[Finding]) -> list[Finding]:
     candidates = findings[-MAX_FINDING_HISTORY_ITEMS:]
     for finding in reversed(candidates):
         compacted = _compact_metadata_finding(finding)
-        serialized = json.dumps(
-            compacted.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
-        )
-        serialized = serialized.replace("--", r"\u002d\u002d")
+        serialized = encode_metadata_json(serialize_metadata_finding(compacted))
         additional_chars = len(serialized) + (1 if retained_reversed else 0)
         if used_chars + additional_chars > MAX_FINDING_HISTORY_CHARS:
             continue
@@ -127,6 +124,21 @@ def finding_identity(
         persisted.anchor_text,
         persisted.reason,
         persisted.confidence,
+    )
+
+
+def serialize_metadata_finding(finding: Finding) -> dict[str, object]:
+    """Serialize a Finding while preserving legacy fingerprint compatibility data."""
+    payload: dict[str, object] = finding.model_dump(mode="json")
+    if finding.legacy_anchor_text != finding.anchor_text:
+        payload["legacy_anchor_text"] = finding.legacy_anchor_text
+    return payload
+
+
+def encode_metadata_json(value: object) -> str:
+    """Encode metadata exactly as it will be embedded in an HTML comment."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).replace(
+        "--", r"\u002d\u002d"
     )
 
 

@@ -31,11 +31,19 @@ class Finding(BaseModel):
         value: Any,
         handler: ModelWrapValidatorHandler["Finding"],
     ) -> "Finding":
+        if isinstance(value, cls):
+            return handler(value)
+        persisted_legacy_anchor = (
+            value.get("legacy_anchor_text") if isinstance(value, dict) else None
+        )
         raw_anchor = value.get("anchor_text") if isinstance(value, dict) else None
         finding = handler(value)
-        finding._legacy_anchor_text = (
-            raw_anchor if isinstance(raw_anchor, str) else finding.anchor_text
-        )
+        if isinstance(persisted_legacy_anchor, str):
+            finding._legacy_anchor_text = persisted_legacy_anchor
+        else:
+            finding._legacy_anchor_text = (
+                raw_anchor if isinstance(raw_anchor, str) else finding.anchor_text
+            )
         return finding
 
     @property

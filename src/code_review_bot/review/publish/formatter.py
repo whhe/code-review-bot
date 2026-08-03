@@ -1,11 +1,15 @@
 """Formats review findings and bot metadata into Markdown comment text."""
 
 import hashlib
-import json
 import logging
 
 from code_review_bot.platforms.models import ChangeRequest
-from code_review_bot.review.context import BOT_METADATA_PREFIX, limit_finding_history
+from code_review_bot.review.context import (
+    BOT_METADATA_PREFIX,
+    encode_metadata_json,
+    limit_finding_history,
+    serialize_metadata_finding,
+)
 from code_review_bot.skill.protocol import Finding, RuntimeMetadata, count_findings_by_severity
 
 logger = logging.getLogger(__name__)
@@ -126,13 +130,11 @@ def format_review_note(
         "head_sha": cr.head_sha,
         "skill": skill_name,
         "version": skill_version,
-        "unlocated_findings": [finding.model_dump(mode="json") for finding in metadata_history],
+        "unlocated_findings": [serialize_metadata_finding(finding) for finding in metadata_history],
     }
     if fingerprints is not None:
         metadata["fingerprints"] = _limit_legacy_fingerprints(fingerprints)
-    metadata_json = json.dumps(metadata, separators=(",", ":"), ensure_ascii=False).replace(
-        "--", r"\u002d\u002d"
-    )
+    metadata_json = encode_metadata_json(metadata)
     suffix = "\n".join(
         [
             _compact_visible_text(
@@ -156,9 +158,7 @@ def format_review_note(
             "skill": _compact_visible_text(skill_name, MAX_FALLBACK_FIELD_CHARS),
             "version": _compact_visible_text(skill_version, MAX_FALLBACK_FIELD_CHARS),
         }
-        fallback_metadata_json = json.dumps(
-            fallback_metadata, separators=(",", ":"), ensure_ascii=False
-        ).replace("--", r"\u002d\u002d")
+        fallback_metadata_json = encode_metadata_json(fallback_metadata)
         fallback_lines = [
             "### Code Review",
             "",
@@ -207,7 +207,7 @@ def _limit_legacy_fingerprints(fingerprints: list[str]) -> list[str]:
     retained_reversed: list[str] = []
     used_chars = 2
     for fingerprint in reversed(fingerprints):
-        serialized = json.dumps(fingerprint).replace("--", r"\u002d\u002d")
+        serialized = encode_metadata_json(fingerprint)
         additional_chars = len(serialized) + (1 if retained_reversed else 0)
         if used_chars + additional_chars > MAX_LEGACY_FINGERPRINT_CHARS:
             continue

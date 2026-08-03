@@ -1,7 +1,12 @@
 import pytest
 
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition
-from code_review_bot.review.context import extract_metadata
+from code_review_bot.review.context import (
+    compute_fingerprint,
+    encode_metadata_json,
+    extract_metadata,
+    serialize_metadata_finding,
+)
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
 from code_review_bot.review.publish.formatter import (
     BOT_METADATA_PREFIX,
@@ -273,6 +278,42 @@ async def test_publisher_deduplicates_finding_across_metadata_serialization() ->
 
     body = adapter.summaries_posted[0]
     assert body.count('"description":"A risky pattern"') == 1
+
+
+def test_review_note_preserves_legacy_anchor_across_metadata_round_trip() -> None:
+    raw_anchor = "first changed line\nsecond changed line"
+    original = make_finding(anchor_text=raw_anchor)
+    body = format_review_note(
+        cr=make_change_request(),
+        skill_name="default",
+        skill_version="1",
+        metadata_findings=[original],
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+
+    assert metadata is not None
+    restored = metadata.unlocated_findings[0]
+    assert restored.legacy_anchor_text == raw_anchor
+    assert compute_fingerprint("default", "1", restored) == compute_fingerprint(
+        "default", "1", original
+    )
+
+
+def test_review_note_uses_budget_encoder_for_double_dash_metadata() -> None:
+    finding = make_finding(description="Run with --safe-mode")
+
+    body = format_review_note(
+        cr=make_change_request(),
+        skill_name="default",
+        skill_version="1",
+        metadata_findings=[finding],
+    )
+
+    metadata_suffix = body.rsplit(BOT_METADATA_PREFIX, maxsplit=1)[1]
+    encoded_finding = encode_metadata_json(serialize_metadata_finding(finding))
+    assert encoded_finding in metadata_suffix
+    assert r"\u002d\u002dsafe-mode" in metadata_suffix
 
 
 @pytest.mark.asyncio
