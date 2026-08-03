@@ -169,7 +169,7 @@ async def test_list_notes_discovers_and_caches_authenticated_author() -> None:
         return_value=httpx.Response(200, json=[])
     )
 
-    adapter = GitHubAdapter(_make_client(), metadata_author_id="555")
+    adapter = GitHubAdapter(_make_client())
     first = await adapter.list_notes("alice/myrepo", "7")
     second = await adapter.list_notes("alice/myrepo", "7")
 
@@ -199,7 +199,7 @@ async def test_list_notes_uses_configured_author_for_installation_token() -> Non
     notes = await adapter.list_notes("alice/myrepo", "7")
 
     assert [note["id"] for note in notes] == [1]
-    assert user_route.call_count == 1
+    assert user_route.call_count == 0
     await adapter.aclose()
 
 

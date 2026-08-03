@@ -3,7 +3,11 @@ import pytest
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition
 from code_review_bot.review.context import extract_metadata
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
-from code_review_bot.review.publish.formatter import BOT_METADATA_PREFIX, format_review_note
+from code_review_bot.review.publish.formatter import (
+    BOT_METADATA_PREFIX,
+    TRUNCATION_NOTICE,
+    format_review_note,
+)
 from code_review_bot.review.publish.platform import PlatformPublisher
 from code_review_bot.skill.protocol import Finding, RuntimeMetadata, SkillResult
 
@@ -494,6 +498,23 @@ def test_formatter_bounds_legacy_fingerprints_within_review_note_limit() -> None
     assert metadata is not None
     assert len(metadata.fingerprints) < len(fingerprints)
     assert fingerprints[-1] in metadata.fingerprints
+
+
+def test_formatter_degrades_to_minimal_summary_when_full_note_is_oversized() -> None:
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        metadata_findings=[make_finding()],
+        skill_name="default",
+        skill_version="1",
+        runtime=make_runtime(model="m" * 70_000),
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert len(body) <= 60_000
+    assert TRUNCATION_NOTICE in body
+    assert metadata is not None
+    assert metadata.unlocated_findings == []
 
 
 @pytest.mark.asyncio

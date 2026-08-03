@@ -2,10 +2,13 @@
 
 import hashlib
 import json
+import logging
 
 from code_review_bot.platforms.models import ChangeRequest
 from code_review_bot.review.context import BOT_METADATA_PREFIX, limit_finding_history
 from code_review_bot.skill.protocol import Finding, RuntimeMetadata, count_findings_by_severity
+
+logger = logging.getLogger(__name__)
 
 CODE_REVIEW_BOT_LABEL = "whhe/code-review-bot"
 CODE_REVIEW_BOT_URL = "https://github.com/whhe/code-review-bot"
@@ -15,6 +18,7 @@ MAX_VISIBLE_FINDINGS = 20
 MAX_VISIBLE_SUMMARY_CHARS = 2_000
 MAX_VISIBLE_FINDING_TEXT_CHARS = 160
 MAX_VISIBLE_LOCATION_CHARS = 200
+MAX_FALLBACK_FIELD_CHARS = 1_000
 TRUNCATION_NOTICE = "[Review output truncated to stay within platform comment limits.]"
 
 AGENT_DISPLAY_NAMES: dict[str, str] = {
@@ -138,8 +142,42 @@ def format_review_note(
     visible_body = "\n".join(lines)
     body = f"{visible_body}{suffix}"
     if len(body) > MAX_REVIEW_NOTE_CHARS:
-        raise ValueError(
-            f"Formatted review note exceeds {MAX_REVIEW_NOTE_CHARS} characters after compaction"
+        logger.warning(
+            "Formatted review note exceeds %s characters after compaction; "
+            "publishing a minimal fallback summary",
+            MAX_REVIEW_NOTE_CHARS,
+        )
+        fallback_metadata = {
+            "schema_version": 2,
+            "head_sha": _compact_visible_text(cr.head_sha, MAX_FALLBACK_FIELD_CHARS),
+            "skill": _compact_visible_text(skill_name, MAX_FALLBACK_FIELD_CHARS),
+            "version": _compact_visible_text(skill_version, MAX_FALLBACK_FIELD_CHARS),
+            "unlocated_findings": [],
+        }
+        fallback_metadata_json = json.dumps(
+            fallback_metadata, separators=(",", ":"), ensure_ascii=False
+        ).replace("--", r"\u002d\u002d")
+        body = "\n".join(
+            [
+                "### Code Review",
+                "",
+                TRUNCATION_NOTICE,
+                "",
+                (
+                    "Severity: "
+                    f"Critical {counts.get('critical', 0)} / "
+                    f"High {counts.get('high', 0)} / "
+                    f"Medium {counts.get('medium', 0)} / "
+                    f"Low {counts.get('low', 0)}"
+                ),
+                f"Inline comments posted: {located_count}",
+                "",
+                _compact_visible_text(
+                    _format_attribution_line(runtime, skill_version), MAX_FALLBACK_FIELD_CHARS
+                ),
+                _compact_visible_text(_format_runtime_line(runtime), MAX_FALLBACK_FIELD_CHARS),
+                f"{BOT_METADATA_PREFIX}{fallback_metadata_json} -->",
+            ]
         )
     return body
 

@@ -1,5 +1,3 @@
-import httpx
-
 from code_review_bot.platforms.github.client import GitHubClient
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition, InlineThread
 
@@ -46,13 +44,10 @@ class GitHubAdapter:
     async def _get_metadata_author_id(self) -> str:
         if self._resolved_metadata_author_id is not None:
             return self._resolved_metadata_author_id
-        try:
-            user = await self._client.get_authenticated_user()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {401, 403} and self._configured_metadata_author_id:
-                self._resolved_metadata_author_id = self._configured_metadata_author_id
-                return self._resolved_metadata_author_id
-            raise
+        if self._configured_metadata_author_id:
+            self._resolved_metadata_author_id = self._configured_metadata_author_id
+            return self._resolved_metadata_author_id
+        user = await self._client.get_authenticated_user()
         author_id = str(user.get("id") or "")
         if not author_id:
             raise RuntimeError(
