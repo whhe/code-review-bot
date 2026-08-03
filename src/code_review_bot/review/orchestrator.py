@@ -169,6 +169,7 @@ class ReviewOrchestrator:
                     )
                     task_context = task_context.model_copy(
                         update={
+                            "change_request": cr,
                             "inline_threads": latest_threads,
                             "previous_head_sha": (
                                 latest_metadata.head_sha if latest_metadata is not None else ""

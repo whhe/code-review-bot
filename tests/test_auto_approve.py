@@ -453,6 +453,11 @@ def _make_thread(description: str) -> InlineThread:
 @pytest.mark.asyncio
 async def test_review_restarts_once_when_inline_threads_change() -> None:
     adapter = ApprovalTrackingAdapter()
+    initial_cr = _make_change_request(description="Initial requirements")
+    latest_cr = _make_change_request(description="Updated requirements")
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[initial_cr, latest_cr, latest_cr]
+    )
     adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
             [_make_thread("old comment")],
@@ -486,6 +491,7 @@ async def test_review_restarts_once_when_inline_threads_change() -> None:
     assert review.await_count == 2
     refreshed_context = review.await_args_list[1].args[1]
     assert refreshed_context.inline_threads == [_make_thread("new reply")]
+    assert refreshed_context.change_request == latest_cr
     published_result = orchestrator.publisher.publish.await_args.args[1]  # type: ignore[union-attr]
     assert published_result.summary == "fresh"
     assert published_result.runtime == RuntimeMetadata(

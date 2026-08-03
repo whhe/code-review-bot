@@ -689,7 +689,19 @@ async def test_list_inline_threads_paginates_thread_replies() -> None:
         ]
     )
 
-    adapter = _make_adapter()
+    client = _make_client()
+    captured_threads: list[dict[str, object]] = []
+    query_resolved_threads = client.query_resolved_threads
+
+    async def capture_resolved_threads(
+        owner: str, repo: str, pr_number: int
+    ) -> list[dict[str, object]]:
+        threads = await query_resolved_threads(owner, repo, pr_number)
+        captured_threads.extend(threads)
+        return threads
+
+    client.query_resolved_threads = capture_resolved_threads  # type: ignore[method-assign]
+    adapter = GitHubAdapter(client, metadata_author_id="999")
     result = await adapter.list_inline_threads("alice/myrepo", "7")
 
     assert result[0].description == "original issue"
@@ -699,6 +711,10 @@ async def test_list_inline_threads_paginates_thread_replies() -> None:
     assert second_payload["variables"] == {
         "threadId": "thread-1",
         "commentsCursor": "comment-cursor-1",
+    }
+    assert captured_threads[0]["comments"]["pageInfo"] == {  # type: ignore[index]
+        "hasNextPage": False,
+        "endCursor": None,
     }
     await adapter.aclose()
 

@@ -206,6 +206,7 @@ class GitHubClient:
             page_info = connection.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
                 comments["nodes"] = nodes
+                comments["pageInfo"] = {"hasNextPage": False, "endCursor": None}
                 return
             comments_cursor = _next_cursor(page_info, "review thread comments")
 
