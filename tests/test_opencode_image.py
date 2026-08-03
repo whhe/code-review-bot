@@ -23,6 +23,7 @@ def test_shared_dockerfile_installs_only_selected_agent() -> None:
     assert "skills add whhe/ai-workshop --skill code-review" in dockerfile
     assert "REVIEW_SKILL=~/.agents/skills/code-review" in dockerfile
     assert "COPY skills/ ./skills/" not in dockerfile
+    assert "https://deb.nodesource.com/setup_22.x" in dockerfile
 
     opencode_stage = dockerfile.split("FROM base AS opencode", 1)[1].split(
         "FROM base AS claude", 1
@@ -35,6 +36,10 @@ def test_shared_dockerfile_installs_only_selected_agent() -> None:
     assert "ENV ACP_AGENT_TYPE=opencode" in opencode_stage
     assert "OPENCODE_DISABLE_PROJECT_CONFIG=1" not in opencode_stage
     assert "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=65536" in opencode_stage
+
+    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Claude ACP requires **Node.js 22+**" in readme
+    assert "Docker images already include Node.js 22" in readme
 
 
 def test_github_actions_publishes_agent_tags_from_shared_dockerfile() -> None:
@@ -67,8 +72,17 @@ def test_code_review_workflow_forwards_metadata_author_id_to_container() -> None
         encoding="utf-8"
     )
 
-    assert "REVIEW_METADATA_AUTHOR_ID:" in workflow
+    assert "CODE_REVIEW_GITHUB_USER_ID: ${{ secrets.CODE_REVIEW_GITHUB_USER_ID }}" in workflow
+    assert "USE_DEFAULT_GITHUB_TOKEN: ${{ secrets.CODE_REVIEW_GITHUB_TOKEN == '' }}" in workflow
     assert "-e REVIEW_METADATA_AUTHOR_ID" in workflow
+    assert 'if [ "$USE_DEFAULT_GITHUB_TOKEN" = "true" ]; then' in workflow
+    assert "REVIEW_METADATA_AUTHOR_ID=41898282" in workflow
+    assert 'REVIEW_METADATA_AUTHOR_ID="${CODE_REVIEW_GITHUB_USER_ID:-}"' in workflow
+    assert "export REVIEW_METADATA_AUTHOR_ID" in workflow
+
+    docker_readme = (_REPO_ROOT / "docker" / "README.md").read_text(encoding="utf-8")
+    assert "Node.js 22; the Docker host does not need Node.js installed" in docker_readme
+    assert "CODE_REVIEW_GITHUB_USER_ID" in docker_readme
 
 
 def test_env_example_defaults_to_claude_agent() -> None:

@@ -239,7 +239,7 @@ class AcpCodingAgent:
             ),
         ) as (conn, _proc):
             try:
-                await conn.initialize(
+                initialize_response = await conn.initialize(
                     protocol_version=PROTOCOL_VERSION,
                     client_capabilities=ClientCapabilities(),
                     client_info=Implementation(
@@ -247,6 +247,15 @@ class AcpCodingAgent:
                         title="code-review-bot",
                         version="0.1.0",
                     ),
+                )
+                agent_info = getattr(initialize_response, "agent_info", None)
+                protocol_version = getattr(initialize_response, "protocol_version", None)
+                logger.info(
+                    "[agent runtime] name=%s version=%s protocol=%s command=%s",
+                    getattr(agent_info, "name", None) or "(unknown)",
+                    getattr(agent_info, "version", None) or "(unknown)",
+                    protocol_version if protocol_version is not None else "(unknown)",
+                    config.command,
                 )
                 session_kwargs: dict[str, Any] = {"cwd": cwd}
                 if additional_directories:

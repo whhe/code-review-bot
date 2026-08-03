@@ -21,7 +21,9 @@ its own built-in knowledge. The Docker image pre-installs the public code-review
 
 ### 1. Install dependencies
 
-Requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/) (see `.python-version`; Docker image uses `python:3.12-slim`).
+Requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/) (see `.python-version`; Docker image
+uses `python:3.12-slim`). Local npx launchers require Node.js; Claude ACP requires **Node.js 22+**.
+Docker images already include Node.js 22.
 
 ```bash
 uv sync --extra dev
@@ -143,6 +145,9 @@ they are never embedded in workspace Git URLs.
 |---|---|---|---|
 | `LOG_LEVEL` | no | `INFO` | Bot log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LOG_DIR` | no | `logs` | Root directory for bot-generated files (relative to `CODE_REVIEW_BOT_ROOT`). Fixed subdirs: `sessions/` (per-review logs), `debug-reports/` (`--debug` Markdown reports). Empty string disables file logging. |
+
+After ACP initialization, INFO logs include the agent-reported name/version, protocol version, and
+launcher command; no additional package-manager lookup is performed.
 
 ### Runtime paths
 

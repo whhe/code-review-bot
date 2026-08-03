@@ -149,6 +149,7 @@ class ReviewOrchestrator:
                 latest_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
                 latest_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
                 _ensure_unchanged_review_revision(cr, latest_cr)
+                cr = latest_cr
                 latest_metadata = extract_metadata(
                     latest_notes,
                     skill_name=skill.name,
@@ -184,6 +185,7 @@ class ReviewOrchestrator:
                     final_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
                     final_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
                     _ensure_unchanged_review_revision(cr, final_cr)
+                    cr = final_cr
                     final_metadata = extract_metadata(
                         final_notes,
                         skill_name=skill.name,
@@ -368,7 +370,7 @@ class ReviewOrchestrator:
 
 
 def _ensure_unchanged_review_revision(original: ChangeRequest, latest: ChangeRequest) -> None:
-    if original != latest:
+    if original.head_sha != latest.head_sha or original.diff_refs != latest.diff_refs:
         raise RuntimeError(
             "Change request revision changed during review; refusing to publish stale findings"
         )

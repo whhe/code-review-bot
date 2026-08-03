@@ -33,7 +33,8 @@ jobs:
           GIT_PLATFORM_TYPE: github
           GIT_REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
           GIT_REPO_TOKEN: ${{ secrets.CODE_REVIEW_GITHUB_TOKEN || github.token }}
-          REVIEW_METADATA_AUTHOR_ID: ${{ secrets.CODE_REVIEW_GITHUB_USER_ID || '41898282' }}
+          CODE_REVIEW_GITHUB_USER_ID: ${{ secrets.CODE_REVIEW_GITHUB_USER_ID }}
+          USE_DEFAULT_GITHUB_TOKEN: ${{ secrets.CODE_REVIEW_GITHUB_TOKEN == '' }}
           LOG_LEVEL: DEBUG
           OPENCODE_UPSTREAM_ENDPOINT: ${{ vars.OPENCODE_UPSTREAM_ENDPOINT }}
           OPENCODE_UPSTREAM_API_KEY: ${{ secrets.OPENCODE_UPSTREAM_API_KEY }}
@@ -51,6 +52,13 @@ jobs:
               exit 1
             fi
           done
+
+          if [ "$USE_DEFAULT_GITHUB_TOKEN" = "true" ]; then
+            REVIEW_METADATA_AUTHOR_ID=41898282
+          else
+            REVIEW_METADATA_AUTHOR_ID="${CODE_REVIEW_GITHUB_USER_ID:-}"
+          fi
+          export REVIEW_METADATA_AUTHOR_ID
 
           docker run --rm \
             -e AUTO_APPROVE_ON_CLEAN_REVIEW \

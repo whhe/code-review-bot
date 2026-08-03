@@ -34,7 +34,8 @@ docker build -f docker/Dockerfile \
 Select the `claude` or `opencode` target to install only that coding agent. A build without
 `--target` uses the final `claude` stage. Package versions are intentionally unpinned, so a rebuilt
 npm layer resolves the current registry version; `npm list -g --depth=0` records the resolved
-version in the build log. A cached layer retains its installed version.
+version in the build log. A cached layer retains its installed version. Both images include
+Node.js 22; the Docker host does not need Node.js installed.
 
 ## Coding-agent image tags
 
@@ -203,8 +204,11 @@ Dependabot**:
 |---|---|
 | `OPENCODE_UPSTREAM_API_KEY` | The same upstream API credential used by regular reviews |
 | `CODE_REVIEW_GITHUB_TOKEN` | Fine-grained token limited to this repository, with Contents read and Pull requests write permissions |
+| `CODE_REVIEW_GITHUB_USER_ID` | Optional numeric user ID for the fine-grained token owner; when omitted, the bot discovers it through `/user` |
 
-Regular pull requests use the built-in `GITHUB_TOKEN` when `CODE_REVIEW_GITHUB_TOKEN` is absent.
+Regular pull requests use the built-in `GITHUB_TOKEN` and the known `github-actions[bot]` user ID
+when `CODE_REVIEW_GITHUB_TOKEN` is absent. When a custom token is present, the workflow leaves the
+metadata author ID empty unless `CODE_REVIEW_GITHUB_USER_ID` is set, allowing `/user` discovery.
 
 ### Other platforms
 

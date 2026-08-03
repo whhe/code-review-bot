@@ -501,11 +501,13 @@ def test_formatter_bounds_legacy_fingerprints_within_review_note_limit() -> None
 
 
 def test_formatter_degrades_to_minimal_summary_when_full_note_is_oversized() -> None:
+    finding = make_finding(line_range="outside diff")
     body = format_review_note(
         cr=make_change_request(),
         summary="Reviewed",
-        metadata_findings=[make_finding()],
-        skill_name="default",
+        unlocated_findings=[finding],
+        metadata_findings=[finding],
+        skill_name="s" * 70_000,
         skill_version="1",
         runtime=make_runtime(model="m" * 70_000),
     )
@@ -513,8 +515,27 @@ def test_formatter_degrades_to_minimal_summary_when_full_note_is_oversized() -> 
     metadata = extract_metadata([{"id": 1, "body": body}])
     assert len(body) <= 60_000
     assert TRUNCATION_NOTICE in body
+    assert "A risky pattern" in body
     assert metadata is not None
-    assert metadata.unlocated_findings == []
+    assert metadata.unlocated_findings == [finding]
+
+
+def test_formatter_bounds_runtime_label_without_dropping_metadata() -> None:
+    finding = make_finding()
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        metadata_findings=[finding],
+        skill_name="default",
+        skill_version="1",
+        runtime=make_runtime(model="m" * 70_000),
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert len(body) <= 60_000
+    assert "truncated sha256:" in body
+    assert metadata is not None
+    assert metadata.unlocated_findings == [finding]
 
 
 @pytest.mark.asyncio

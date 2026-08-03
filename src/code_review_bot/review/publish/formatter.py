@@ -18,6 +18,7 @@ MAX_VISIBLE_FINDINGS = 20
 MAX_VISIBLE_SUMMARY_CHARS = 2_000
 MAX_VISIBLE_FINDING_TEXT_CHARS = 160
 MAX_VISIBLE_LOCATION_CHARS = 200
+MAX_RUNTIME_LINE_CHARS = 1_000
 MAX_FALLBACK_FIELD_CHARS = 1_000
 TRUNCATION_NOTICE = "[Review output truncated to stay within platform comment limits.]"
 
@@ -134,8 +135,10 @@ def format_review_note(
     )
     suffix = "\n".join(
         [
-            _format_attribution_line(runtime, skill_version),
-            _format_runtime_line(runtime),
+            _compact_visible_text(
+                _format_attribution_line(runtime, skill_version), MAX_RUNTIME_LINE_CHARS
+            ),
+            _compact_visible_text(_format_runtime_line(runtime), MAX_RUNTIME_LINE_CHARS),
             f"{BOT_METADATA_PREFIX}{metadata_json} -->",
         ]
     )
@@ -148,30 +151,47 @@ def format_review_note(
             MAX_REVIEW_NOTE_CHARS,
         )
         fallback_metadata = {
-            "schema_version": 2,
+            **metadata,
             "head_sha": _compact_visible_text(cr.head_sha, MAX_FALLBACK_FIELD_CHARS),
             "skill": _compact_visible_text(skill_name, MAX_FALLBACK_FIELD_CHARS),
             "version": _compact_visible_text(skill_version, MAX_FALLBACK_FIELD_CHARS),
-            "unlocated_findings": [],
         }
         fallback_metadata_json = json.dumps(
             fallback_metadata, separators=(",", ":"), ensure_ascii=False
         ).replace("--", r"\u002d\u002d")
-        body = "\n".join(
+        fallback_lines = [
+            "### Code Review",
+            "",
+            TRUNCATION_NOTICE,
+            "",
+            (
+                "Severity: "
+                f"Critical {counts.get('critical', 0)} / "
+                f"High {counts.get('high', 0)} / "
+                f"Medium {counts.get('medium', 0)} / "
+                f"Low {counts.get('low', 0)}"
+            ),
+            f"Inline comments posted: {located_count}",
+            "",
+        ]
+        if findings:
+            finding = findings[0]
+            label = SEVERITY_LABELS.get(finding.severity, finding.severity)
+            fallback_lines.extend(
+                [
+                    "#### Highest-priority finding without diff position",
+                    "",
+                    f"- **[{label}]** `"
+                    f"{_compact_visible_text(finding.file_path, MAX_VISIBLE_LOCATION_CHARS)}:"
+                    f"{_compact_visible_text(finding.line_range, MAX_VISIBLE_LOCATION_CHARS)}`: "
+                    f"{_compact_visible_text(finding.description, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
+                    "  - Reason: "
+                    f"{_compact_visible_text(finding.reason, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
+                    "",
+                ]
+            )
+        fallback_lines.extend(
             [
-                "### Code Review",
-                "",
-                TRUNCATION_NOTICE,
-                "",
-                (
-                    "Severity: "
-                    f"Critical {counts.get('critical', 0)} / "
-                    f"High {counts.get('high', 0)} / "
-                    f"Medium {counts.get('medium', 0)} / "
-                    f"Low {counts.get('low', 0)}"
-                ),
-                f"Inline comments posted: {located_count}",
-                "",
                 _compact_visible_text(
                     _format_attribution_line(runtime, skill_version), MAX_FALLBACK_FIELD_CHARS
                 ),
@@ -179,6 +199,7 @@ def format_review_note(
                 f"{BOT_METADATA_PREFIX}{fallback_metadata_json} -->",
             ]
         )
+        body = "\n".join(fallback_lines)
     return body
 
 

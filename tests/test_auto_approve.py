@@ -648,12 +648,61 @@ async def test_review_aborts_when_change_request_head_changes_during_review() ->
 
 
 @pytest.mark.asyncio
-async def test_review_aborts_when_change_request_description_changes_during_review() -> None:
+async def test_review_allows_non_revision_metadata_changes_during_review() -> None:
     adapter = ApprovalTrackingAdapter()
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
             _make_change_request(description="Initial requirements"),
             _make_change_request(description="Updated requirements"),
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="stale", findings=[])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_awaited_once()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "latest_change_request",
+    [
+        _make_change_request(state="closed"),
+        _make_change_request(draft=True),
+    ],
+)
+async def test_review_uses_latest_change_request_state_for_approval(
+    latest_change_request: ChangeRequest,
+) -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[_make_change_request(), latest_change_request]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    result = SkillResult(summary="clean", findings=[])
+
+    async with _stub_review_internals(orchestrator, result):
+        await orchestrator.review_change_request("5")
+
+    assert adapter.approve_calls == []
+    assert adapter.revoke_calls == []
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_diff_refs_change_with_same_head() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _make_change_request(),
+            _make_change_request(
+                diff_refs={
+                    "base_sha": "new-base",
+                    "start_sha": "new-start",
+                    "head_sha": "headsha",
+                }
+            ),
         ]
     )
     orchestrator = _make_orchestrator(adapter)
