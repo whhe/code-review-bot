@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from code_review_bot.review.context import compute_fingerprint, extract_metadata
@@ -107,6 +108,43 @@ def test_extract_metadata_preserves_finding_history_across_heads() -> None:
     assert metadata is not None
     assert metadata.head_sha == "head-2"
     assert [finding.description for finding in metadata.unlocated_findings] == ["fixed issue"]
+
+
+def test_extract_metadata_bounds_history_while_retaining_newest_findings() -> None:
+    notes: list[dict[str, object]] = []
+    findings: list[Finding] = []
+    for index in range(50):
+        finding = Finding(
+            severity="medium",
+            description=f"issue {index}: " + "d" * 2_000,
+            file_path=f"src/{index}.py",
+            line_range=str(index + 1),
+            anchor_text="",
+            reason="r" * 2_000,
+            confidence=80,
+        )
+        findings.append(finding)
+        payload = {
+            "schema_version": 2,
+            "head_sha": f"head-{index}",
+            "skill": "default",
+            "version": "1",
+            "unlocated_findings": [finding.model_dump(mode="json")],
+        }
+        notes.append(
+            {
+                "id": index + 1,
+                "body": (
+                    "<!-- code-review-bot:" + json.dumps(payload, separators=(",", ":")) + " -->"
+                ),
+            }
+        )
+
+    metadata = extract_metadata(notes)
+
+    assert metadata is not None
+    assert len(metadata.unlocated_findings) < len(findings)
+    assert metadata.unlocated_findings[-1] == findings[-1]
 
 
 def test_extract_metadata_selects_history_for_requested_skill_version() -> None:

@@ -382,13 +382,13 @@ def _combine_runtime_metadata(
         return None
 
     def combine_label(attribute: str) -> str | None:
-        values = [
-            value
-            for runtime in (first, second)
-            if runtime is not None
-            and isinstance(value := getattr(runtime, attribute), str)
-            and value
-        ]
+        values: list[str] = []
+        for runtime in (first, second):
+            if runtime is None:
+                continue
+            value = getattr(runtime, attribute)
+            if isinstance(value, str) and value:
+                values.append(value)
         unique = list(dict.fromkeys(values))
         if len(unique) == 1:
             return unique[0]

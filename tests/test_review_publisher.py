@@ -285,6 +285,78 @@ def test_formatter_keeps_agent_text_inside_metadata_comment() -> None:
     assert metadata.unlocated_findings == [finding]
 
 
+def test_formatter_bounds_large_review_note_and_preserves_valid_metadata() -> None:
+    finding = make_finding(
+        line_range="outside diff",
+        description="d" * 40_000,
+        reason="r" * 40_000,
+    )
+
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        unlocated_findings=[finding],
+        metadata_findings=[finding],
+        skill_name="default",
+        skill_version="1",
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert len(body) <= 60_000
+    assert "truncated sha256:" in body.split(BOT_METADATA_PREFIX, 1)[0]
+    assert metadata is not None
+    assert len(metadata.unlocated_findings) == 1
+    assert metadata.unlocated_findings[0].description.startswith("d" * 100)
+    assert "truncated sha256:" in metadata.unlocated_findings[0].description
+
+
+def test_formatter_keeps_critical_findings_visible_when_output_is_bounded() -> None:
+    low = make_finding(
+        severity="low",
+        line_range="outside diff",
+        description="l" * 30_000,
+        reason="r" * 30_000,
+    )
+    critical = make_finding(
+        severity="critical",
+        line_range="outside diff",
+        description="SECOND-CRITICAL",
+        reason="Critical behavior is unsafe",
+    )
+
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        unlocated_findings=[low, critical],
+        metadata_findings=[low, critical],
+        skill_name="default",
+        skill_version="1",
+    )
+
+    visible_body = body.split(BOT_METADATA_PREFIX, 1)[0]
+    assert len(body) <= 60_000
+    assert "SECOND-CRITICAL" in visible_body
+    assert "truncated sha256:" in visible_body
+
+
+def test_formatter_bounds_legacy_fingerprints_within_review_note_limit() -> None:
+    fingerprints = [f"{index:064x}" for index in range(2_000)]
+
+    body = format_review_note(
+        cr=make_change_request(),
+        summary="Reviewed",
+        fingerprints=fingerprints,
+        skill_name="default",
+        skill_version="1",
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert len(body) <= 60_000
+    assert metadata is not None
+    assert len(metadata.fingerprints) < len(fingerprints)
+    assert fingerprints[-1] in metadata.fingerprints
+
+
 @pytest.mark.asyncio
 async def test_formatter_includes_unlocated_finding() -> None:
     body = format_review_note(
