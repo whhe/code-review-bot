@@ -6,7 +6,7 @@ import pytest
 
 from code_review_bot.config import Settings
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition, InlineThread
-from code_review_bot.review.context import BotMetadata, compute_fingerprint
+from code_review_bot.review.context import BotMetadata
 from code_review_bot.review.models import ReviewOutcome
 from code_review_bot.review.orchestrator import ReviewOrchestrator
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
@@ -95,7 +95,7 @@ class ApprovalTrackingAdapter:
         pass
 
 
-class LegacyApprovalAdapter(ApprovalTrackingAdapter):
+class BasicApprovalAdapter(ApprovalTrackingAdapter):
     async def approve_change_request(
         self, project_ref: str, cr_id: str, head_sha: str
     ) -> dict[str, object]:
@@ -121,26 +121,17 @@ class ReviewBodyApprovalTrackingAdapter(ApprovalTrackingAdapter):
         return await self.revoke_change_request_approval(project_ref, cr_id, head_sha, body=body)
 
 
-class LegacyPublisher:
-    def __init__(self) -> None:
-        self.calls = 0
-        self.fingerprints: list[str] = []
-        self.findings: list[Finding] = []
+class FailingSummaryApprovalAdapter(ApprovalTrackingAdapter):
+    def __init__(self, fail_on_call: int) -> None:
+        super().__init__()
+        self.fail_on_call = fail_on_call
+        self.summary_attempts = 0
 
-    async def publish(
-        self,
-        cr: ChangeRequest,
-        result: SkillResult,
-        skill_name: str,
-        skill_version: str,
-        fingerprints: list[str],
-        existing_notes: list[dict[str, object]] | None = None,
-        resolved_findings: list[Finding] | None = None,
-    ) -> ReviewOutcome:
-        self.calls += 1
-        self.fingerprints = fingerprints
-        self.findings = list(result.findings)
-        return ReviewOutcome(summary=result.summary)
+    async def publish_summary(self, project_ref: str, cr_id: str, body: str) -> dict[str, object]:
+        self.summary_attempts += 1
+        if self.summary_attempts == self.fail_on_call:
+            raise RuntimeError("summary comment rejected")
+        return await super().publish_summary(project_ref, cr_id, body)
 
 
 def _make_orchestrator(
@@ -185,8 +176,8 @@ async def test_maybe_update_approval_approves_when_no_new_findings() -> None:
 
 
 @pytest.mark.asyncio
-async def test_maybe_update_approval_preserves_legacy_platform_adapter_contract() -> None:
-    adapter = LegacyApprovalAdapter()
+async def test_maybe_update_approval_supports_basic_platform_adapter() -> None:
+    adapter = BasicApprovalAdapter()
     orchestrator = _make_orchestrator(adapter)
 
     approved = await orchestrator._maybe_update_approval(
@@ -519,6 +510,7 @@ async def test_review_restarts_when_summary_finding_history_changes() -> None:
     orchestrator = _make_orchestrator(adapter)
     concurrent_finding = _make_finding("high")
     concurrent_metadata = BotMetadata(
+        schema_version=2,
         head_sha="headsha",
         skill="code-review",
         version="1.0",
@@ -654,28 +646,76 @@ async def test_review_aborts_when_change_request_head_changes_during_review() ->
 
 
 @pytest.mark.asyncio
-async def test_review_allows_non_revision_metadata_changes_during_review() -> None:
+async def test_review_restarts_when_prompt_change_request_metadata_changes() -> None:
+    adapter = ApprovalTrackingAdapter()
+    initial_cr = _make_change_request(description="Initial requirements")
+    latest_cr = _make_change_request(description="Updated requirements")
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[initial_cr, latest_cr, latest_cr]
+    )
+    orchestrator = _make_orchestrator(adapter)
+    stale = SkillResult(summary="stale", findings=[])
+    refreshed = SkillResult(summary="fresh", findings=[])
+
+    async with _stub_review_internals(orchestrator, stale, refreshed) as review:
+        await orchestrator.review_change_request("5")
+
+    assert review.await_count == 2
+    assert review.await_args_list[1].args[1].change_request == latest_cr
+    orchestrator.publisher.publish.assert_awaited_once()  # type: ignore[union-attr]
+    assert orchestrator.publisher.publish.await_args.args[1].summary == "fresh"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_review_updates_derived_branch_context_when_source_branch_changes() -> None:
+    adapter = ApprovalTrackingAdapter()
+    initial_cr = _make_change_request(source_branch="feature-old")
+    latest_cr = _make_change_request(source_branch="feature-renamed")
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[initial_cr, latest_cr, latest_cr]
+    )
+    orchestrator = _make_orchestrator(adapter)
+
+    async with _stub_review_internals(
+        orchestrator,
+        SkillResult(summary="stale", findings=[]),
+        SkillResult(summary="fresh", findings=[]),
+    ) as review:
+        await orchestrator.review_change_request("5")
+
+    refreshed_context = review.await_args_list[1].args[1]
+    assert refreshed_context.change_request == latest_cr
+    assert refreshed_context.source_branch == "feature-renamed"
+    assert refreshed_context.target_branch == "main"
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_prompt_metadata_changes_again_after_rerun() -> None:
     adapter = ApprovalTrackingAdapter()
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
             _make_change_request(description="Initial requirements"),
             _make_change_request(description="Updated requirements"),
+            _make_change_request(description="Final requirements"),
         ]
     )
     orchestrator = _make_orchestrator(adapter)
-    result = SkillResult(summary="stale", findings=[])
 
-    async with _stub_review_internals(orchestrator, result):
-        await orchestrator.review_change_request("5")
+    with pytest.raises(RuntimeError, match="review context changed during review"):
+        async with _stub_review_internals(
+            orchestrator,
+            SkillResult(summary="stale", findings=[]),
+            SkillResult(summary="still stale", findings=[]),
+        ):
+            await orchestrator.review_change_request("5")
 
-    orchestrator.publisher.publish.assert_awaited_once()  # type: ignore[union-attr]
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "latest_change_request",
     [
-        _make_change_request(state="closed"),
         _make_change_request(draft=True),
     ],
 )
@@ -692,6 +732,30 @@ async def test_review_uses_latest_change_request_state_for_approval(
     async with _stub_review_internals(orchestrator, result):
         await orchestrator.review_change_request("5")
 
+    assert adapter.approve_calls == []
+    assert adapter.revoke_calls == []
+
+
+@pytest.mark.asyncio
+async def test_review_restarts_when_change_request_state_changes() -> None:
+    adapter = ApprovalTrackingAdapter()
+    initial_cr = _make_change_request(state="opened")
+    closed_cr = _make_change_request(state="closed")
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[initial_cr, closed_cr, closed_cr]
+    )
+    orchestrator = _make_orchestrator(adapter)
+
+    async with _stub_review_internals(
+        orchestrator,
+        SkillResult(summary="stale", findings=[]),
+        SkillResult(summary="fresh", findings=[]),
+    ) as review:
+        await orchestrator.review_change_request("5")
+
+    assert review.await_count == 2
+    assert review.await_args_list[1].args[1].change_request == closed_cr
+    assert orchestrator.publisher.publish.await_args.args[1].summary == "fresh"  # type: ignore[union-attr]
     assert adapter.approve_calls == []
     assert adapter.revoke_calls == []
 
@@ -800,61 +864,27 @@ async def test_review_aborts_when_head_changes_while_refreshing_context_after_re
 
 
 @pytest.mark.asyncio
-async def test_review_preserves_legacy_publisher_contract() -> None:
-    adapter = ApprovalTrackingAdapter()
-    orchestrator = _make_orchestrator(adapter, auto_approve=False)
-    publisher = LegacyPublisher()
-    orchestrator.publisher = publisher
-    orchestrator._platform_publish = False
-    finding = _make_finding("high")
-    finding_fingerprint = compute_fingerprint("code-review", "1.0", finding)
-
-    async with _stub_review_internals(
-        orchestrator,
-        SkillResult(summary="ok", findings=[finding]),
-        previous_metadata=BotMetadata(
-            skill="code-review",
-            version="1.0",
-            fingerprints={"existing", finding_fingerprint},
-        ),
-        stub_publisher=False,
-    ):
-        outcome = await orchestrator.review_change_request("5")
-
-    assert outcome.summary == "ok"
-    assert publisher.calls == 1
-    assert set(publisher.fingerprints) == {
-        "existing",
-        finding_fingerprint,
-    }
-    assert publisher.findings == []
-
-
-@pytest.mark.asyncio
-async def test_platform_publisher_filters_legacy_metadata_during_schema_migration() -> None:
-    adapter = ApprovalTrackingAdapter()
+async def test_review_revokes_approval_when_supplemental_summary_publication_fails() -> None:
+    adapter = FailingSummaryApprovalAdapter(fail_on_call=2)
     orchestrator = _make_orchestrator(adapter)
-    finding = _make_finding("high")
-    finding_fingerprint = compute_fingerprint("code-review", "1.0", finding)
-
-    async with _stub_review_internals(
-        orchestrator,
-        SkillResult(summary="ok", findings=[finding]),
-        previous_metadata=BotMetadata(
-            schema_version=1,
-            skill="code-review",
-            version="1.0",
-            fingerprints={finding_fingerprint},
-        ),
-    ):
-        await orchestrator.review_change_request("5")
-
-    published_result = orchestrator.publisher.publish.await_args.args[1]  # type: ignore[union-attr]
-    assert published_result.findings == []
-    assert orchestrator.publisher.publish.await_args.kwargs["metadata_findings"] == [  # type: ignore[union-attr]
-        finding
+    findings = [
+        _make_finding("critical").model_copy(
+            update={"description": f"issue-{index}", "line_range": "outside diff"}
+        )
+        for index in range(41)
     ]
-    assert adapter.approve_calls == [("1", "5", "headsha")]
+
+    with pytest.raises(RuntimeError, match="summary comment rejected"):
+        async with _stub_review_internals(
+            orchestrator,
+            SkillResult(summary="issues", findings=findings),
+            stub_publisher=False,
+        ):
+            await orchestrator.review_change_request("5")
+
+    assert len(adapter.summary_bodies) == 1
+    assert adapter.revoke_calls == [("1", "5", "headsha")]
+    assert adapter.approve_calls == []
 
 
 @pytest.mark.asyncio
@@ -873,8 +903,8 @@ async def test_github_auto_approval_publishes_summary_as_single_review() -> None
 
 
 @pytest.mark.asyncio
-async def test_github_legacy_adapter_keeps_separate_summary_and_approval() -> None:
-    adapter = LegacyApprovalAdapter()
+async def test_github_basic_adapter_keeps_separate_summary_and_approval() -> None:
+    adapter = BasicApprovalAdapter()
     adapter.platform_name = "github"
     orchestrator = _make_orchestrator(adapter)
     result = SkillResult(summary="ok", findings=[])
@@ -937,7 +967,6 @@ async def test_review_pins_workspace_to_change_request_diff_refs() -> None:
         target_sha="start",
     )
     publish_call = orchestrator.publisher.publish.await_args  # type: ignore[union-attr]
-    assert publish_call.args[4] is None
     assert publish_call.kwargs["existing_notes"] == []
 
 
@@ -952,6 +981,7 @@ async def test_review_passes_previous_unlocated_findings_to_agent() -> None:
         orchestrator,
         result,
         previous_metadata=BotMetadata(
+            schema_version=2,
             skill="code-review",
             version="1.0",
             unlocated_findings=[previous_finding],
@@ -974,6 +1004,7 @@ async def test_review_drops_previous_unlocated_findings_for_different_skill_vers
         orchestrator,
         result,
         previous_metadata=BotMetadata(
+            schema_version=2,
             skill="other-skill",
             version="old",
             unlocated_findings=[previous_finding],

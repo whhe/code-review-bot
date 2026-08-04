@@ -721,7 +721,7 @@ async def test_list_inline_threads_paginates_thread_replies() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_list_inline_threads_handles_deleted_thread_during_comment_pagination() -> None:
+async def test_list_inline_threads_rejects_deleted_thread_during_comment_pagination() -> None:
     route = respx.post(f"{_BASE}/graphql").mock(
         side_effect=[
             httpx.Response(
@@ -766,10 +766,9 @@ async def test_list_inline_threads_handles_deleted_thread_during_comment_paginat
     )
 
     adapter = _make_adapter()
-    result = await adapter.list_inline_threads("alice/myrepo", "7")
+    with pytest.raises(RuntimeError, match="comments connection disappeared during pagination"):
+        await adapter.list_inline_threads("alice/myrepo", "7")
 
-    assert [thread.description for thread in result] == ["original issue"]
-    assert result[0].replies == []
     assert route.call_count == 2
     await adapter.aclose()
 
@@ -784,7 +783,7 @@ async def test_list_inline_threads_handles_deleted_thread_during_comment_paginat
     ],
 )
 @respx.mock
-async def test_list_inline_threads_handles_missing_connection_during_thread_pagination(
+async def test_list_inline_threads_rejects_missing_connection_during_thread_pagination(
     second_page_data: dict[str, object],
 ) -> None:
     route = respx.post(f"{_BASE}/graphql").mock(
@@ -831,9 +830,9 @@ async def test_list_inline_threads_handles_missing_connection_during_thread_pagi
     )
 
     adapter = _make_adapter()
-    result = await adapter.list_inline_threads("alice/myrepo", "7")
+    with pytest.raises(RuntimeError, match="threads connection disappeared during pagination"):
+        await adapter.list_inline_threads("alice/myrepo", "7")
 
-    assert [thread.description for thread in result] == ["original issue"]
     assert route.call_count == 2
     await adapter.aclose()
 

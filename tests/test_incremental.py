@@ -1,18 +1,13 @@
 import json
 import logging
-from types import SimpleNamespace
 
 import pytest
 
-from code_review_bot.review.context import (
-    compute_fingerprint,
-    extract_metadata,
-    limit_finding_history,
-)
+from code_review_bot.review.context import extract_metadata, limit_finding_history
 from code_review_bot.skill.protocol import Finding
 
 
-def test_extract_metadata_reads_hidden_bot_comment() -> None:
+def test_extract_metadata_ignores_legacy_bot_comment() -> None:
     body = (
         '<!-- code-review-bot:{"head_sha":"old","skill":"default","version":"1",'
         '"fingerprints":["abc"]} -->'
@@ -20,39 +15,12 @@ def test_extract_metadata_reads_hidden_bot_comment() -> None:
 
     metadata = extract_metadata([{"id": 1, "body": body}])
 
-    assert metadata is not None
-    assert metadata.note_id == 1
-    assert metadata.head_sha == "old"
-    assert metadata.unlocated_findings == []
-
-
-def test_fingerprint_preserves_raw_anchor_compatibility_after_normalization() -> None:
-    raw_anchor = "first changed line\nsecond changed line"
-    legacy_finding = SimpleNamespace(
-        file_path="src/a.py",
-        line_range="10",
-        anchor_text=raw_anchor,
-        description="same issue",
-    )
-    current_finding = Finding(
-        severity="high",
-        description="same issue",
-        file_path="src/a.py",
-        line_range="10",
-        anchor_text=raw_anchor,
-        reason="reason",
-        confidence=90,
-    )
-
-    assert current_finding.anchor_text == "first changed line"
-    assert compute_fingerprint("default", "1", current_finding) == compute_fingerprint(
-        "default", "1", legacy_finding
-    )
+    assert metadata is None
 
 
 def test_extract_metadata_reads_unlocated_finding_history() -> None:
     body = (
-        '<!-- code-review-bot:{"head_sha":"old","skill":"default","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"old","skill":"default","version":"1",'
         '"unlocated_findings":[{"severity":"high","description":"summary-only issue",'
         '"file_path":"src/a.py","line_range":"outside diff","anchor_text":"",'
         '"reason":"No diff position","confidence":90}]} -->'
@@ -67,13 +35,15 @@ def test_extract_metadata_reads_unlocated_finding_history() -> None:
 
 def test_extract_metadata_merges_history_from_concurrent_summaries() -> None:
     first = (
-        '<!-- code-review-bot:{"head_sha":"head","skill":"default","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"head","skill":"default",'
+        '"version":"1",'
         '"unlocated_findings":[{"severity":"high","description":"issue A",'
         '"file_path":"src/a.py","line_range":"1","anchor_text":"",'
         '"reason":"reason A","confidence":90}]} -->'
     )
     second = (
-        '<!-- code-review-bot:{"head_sha":"head","skill":"default","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"head","skill":"default",'
+        '"version":"1",'
         '"unlocated_findings":[{"severity":"high","description":"issue B",'
         '"file_path":"src/b.py","line_range":"2","anchor_text":"",'
         '"reason":"reason B","confidence":90}]} -->'
@@ -95,13 +65,15 @@ def test_extract_metadata_merges_history_from_concurrent_summaries() -> None:
 
 def test_extract_metadata_preserves_finding_history_across_heads() -> None:
     previous_head = (
-        '<!-- code-review-bot:{"head_sha":"head-1","skill":"default","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"head-1","skill":"default",'
+        '"version":"1",'
         '"unlocated_findings":[{"severity":"high","description":"fixed issue",'
         '"file_path":"src/a.py","line_range":"1","anchor_text":"",'
         '"reason":"reason","confidence":90}]} -->'
     )
     latest_head = (
-        '<!-- code-review-bot:{"head_sha":"head-2","skill":"default","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"head-2","skill":"default",'
+        '"version":"1",'
         '"unlocated_findings":[]} -->'
     )
 
@@ -215,13 +187,13 @@ def test_extract_metadata_deduplicates_without_quadratic_finding_equality(
     assert metadata is not None
     assert equality_calls < 500
     descriptions = [finding.description for finding in metadata.unlocated_findings]
-    assert len(descriptions) == 50
+    assert len(descriptions) == 100
     assert descriptions.count("issue 99") == 1
     assert descriptions[-1] == "issue 99"
 
 
-def test_extract_metadata_deduplicates_legacy_full_and_compacted_findings() -> None:
-    legacy_full = Finding(
+def test_extract_metadata_deduplicates_full_and_compacted_findings() -> None:
+    full_finding = Finding(
         severity="medium",
         description="d" * 5_000,
         file_path="src/a.py",
@@ -230,7 +202,7 @@ def test_extract_metadata_deduplicates_legacy_full_and_compacted_findings() -> N
         reason="reason",
         confidence=80,
     )
-    compacted = limit_finding_history([legacy_full])[0]
+    compacted = limit_finding_history([full_finding])[0]
 
     def note(note_id: int, finding: Finding) -> dict[str, object]:
         payload = {
@@ -245,15 +217,13 @@ def test_extract_metadata_deduplicates_legacy_full_and_compacted_findings() -> N
             "body": "<!-- code-review-bot:" + json.dumps(payload, separators=(",", ":")) + " -->",
         }
 
-    metadata = extract_metadata([note(1, legacy_full), note(2, compacted)])
+    metadata = extract_metadata([note(1, full_finding), note(2, compacted)])
 
     assert metadata is not None
     assert metadata.unlocated_findings == [compacted]
 
 
-def test_finding_history_warning_describes_all_retention_drops(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_finding_history_retains_compact_findings_beyond_fifty_items() -> None:
     findings = [
         Finding(
             severity="low",
@@ -267,26 +237,48 @@ def test_finding_history_warning_describes_all_retention_drops(
         for index in range(51)
     ]
 
+    assert limit_finding_history(findings) == findings
+
+
+def test_finding_history_warning_describes_character_budget_drops(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    findings = [
+        Finding(
+            severity="low",
+            description=f"issue {index}",
+            file_path="src/a.py",
+            line_range=str(index),
+            anchor_text="",
+            reason="r" * 4_000,
+            confidence=70,
+        )
+        for index in range(51)
+    ]
+
     with caplog.at_level(logging.WARNING):
         retained = limit_finding_history(findings)
 
-    assert len(retained) == 50
-    assert "Dropped 1 review metadata findings outside the retention budgets" in caplog.text
+    assert len(retained) < len(findings)
+    assert "review metadata findings outside the retention budget" in caplog.text
 
 
 def test_extract_metadata_selects_history_for_requested_skill_version() -> None:
     skill_a_first = (
-        '<!-- code-review-bot:{"head_sha":"head-1","skill":"skill-a","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"head-1","skill":"skill-a",'
+        '"version":"1",'
         '"unlocated_findings":[{"severity":"high","description":"skill A issue",'
         '"file_path":"src/a.py","line_range":"1","anchor_text":"",'
         '"reason":"reason","confidence":90}]} -->'
     )
     skill_b = (
-        '<!-- code-review-bot:{"head_sha":"head-1","skill":"skill-b","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"head-1","skill":"skill-b",'
+        '"version":"1",'
         '"unlocated_findings":[]} -->'
     )
     skill_a_latest = (
-        '<!-- code-review-bot:{"head_sha":"head-2","skill":"skill-a","version":"1",'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"head-2","skill":"skill-a",'
+        '"version":"1",'
         '"unlocated_findings":[]} -->'
     )
 
@@ -309,7 +301,7 @@ def test_extract_metadata_selects_history_for_requested_skill_version() -> None:
 def test_extract_metadata_isolates_history_to_latest_skill_version_without_full_filters() -> None:
     def metadata_body(skill: str, version: str, description: str) -> str:
         return (
-            '<!-- code-review-bot:{"head_sha":"head","skill":"'
+            '<!-- code-review-bot:{"schema_version":2,"head_sha":"head","skill":"'
             + skill
             + '","version":"'
             + version
@@ -349,7 +341,8 @@ def test_extract_metadata_returns_none_when_no_comment() -> None:
 def test_extract_metadata_tolerates_malformed_json_and_continues() -> None:
     bad_body = "<!-- code-review-bot:{invalid json} -->"
     good_body = (
-        '<!-- code-review-bot:{"head_sha":"ok","skill":"s","version":"1","fingerprints":[]} -->'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"ok","skill":"s",'
+        '"version":"1","unlocated_findings":[]} -->'
     )
     # A malformed newer note must not hide the most recent valid metadata.
     metadata = extract_metadata(
@@ -370,12 +363,12 @@ def test_extract_metadata_returns_none_when_all_notes_have_malformed_json() -> N
 
 def test_extract_metadata_picks_most_recent_when_multiple_notes() -> None:
     old_body = (
-        '<!-- code-review-bot:{"head_sha":"old","skill":"default","version":"1",'
-        '"fingerprints":[]} -->'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"old","skill":"default",'
+        '"version":"1","unlocated_findings":[]} -->'
     )
     new_body = (
-        '<!-- code-review-bot:{"head_sha":"new","skill":"default","version":"1",'
-        '"fingerprints":[]} -->'
+        '<!-- code-review-bot:{"schema_version":2,"head_sha":"new","skill":"default",'
+        '"version":"1","unlocated_findings":[]} -->'
     )
 
     metadata = extract_metadata(

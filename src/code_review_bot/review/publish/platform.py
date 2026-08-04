@@ -7,7 +7,11 @@ from code_review_bot.platforms.models import ChangeRequest, InlinePosition
 from code_review_bot.platforms.protocol import PlatformAdapter
 from code_review_bot.review.context import finding_identity
 from code_review_bot.review.models import ReviewOutcome
-from code_review_bot.review.publish.formatter import SEVERITY_LABELS, format_review_note
+from code_review_bot.review.publish.formatter import (
+    SEVERITY_LABELS,
+    format_additional_findings_notes,
+    format_review_note,
+)
 from code_review_bot.skill.protocol import Finding, SkillResult, count_findings_by_severity
 
 logger = logging.getLogger(__name__)
@@ -29,7 +33,6 @@ class PlatformPublisher:
         result: SkillResult,
         skill_name: str,
         skill_version: str,
-        fingerprints: list[str] | None = None,
         existing_notes: list[dict[str, object]] | None = None,
         resolved_findings: list[Finding] | None = None,
         metadata_findings: list[Finding] | None = None,
@@ -56,10 +59,16 @@ class PlatformPublisher:
             resolved_findings=resolved_findings,
             skill_name=skill_name,
             skill_version=skill_version,
-            fingerprints=fingerprints,
             metadata_findings=metadata_history,
             runtime=result.runtime,
         )
+        for additional_body in format_additional_findings_notes(
+            unlocated,
+            cr,
+            skill_name,
+            skill_version,
+        ):
+            await self.adapter.publish_summary(cr.project_ref, cr.cr_id, additional_body)
         if publish_summary:
             await self.adapter.publish_summary(cr.project_ref, cr.cr_id, body)
         return ReviewOutcome(

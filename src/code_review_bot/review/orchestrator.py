@@ -12,7 +12,7 @@ from code_review_bot.logging_config import (
 from code_review_bot.platforms.models import ChangeRequest
 from code_review_bot.platforms.protocol import PlatformAdapter, ReviewBodyApprovalAdapter
 from code_review_bot.repo.manager import RepoManager
-from code_review_bot.review.context import BotMetadata, compute_fingerprint, extract_metadata
+from code_review_bot.review.context import BotMetadata, extract_metadata
 from code_review_bot.review.file_filter import FileFilter
 from code_review_bot.review.models import ReviewOutcome, ReviewTaskContext
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
@@ -149,6 +149,7 @@ class ReviewOrchestrator:
                 latest_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
                 latest_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
                 _ensure_unchanged_review_revision(cr, latest_cr)
+                prompt_context_changed = _review_prompt_context_changed(cr, latest_cr)
                 cr = latest_cr
                 latest_metadata = extract_metadata(
                     latest_notes,
@@ -161,7 +162,8 @@ class ReviewOrchestrator:
                     skill.version,
                 )
                 if (
-                    latest_threads != task_context.inline_threads
+                    prompt_context_changed
+                    or latest_threads != task_context.inline_threads
                     or latest_unlocated_findings != task_context.previous_unlocated_findings
                 ):
                     logger.info(
@@ -170,6 +172,8 @@ class ReviewOrchestrator:
                     task_context = task_context.model_copy(
                         update={
                             "change_request": cr,
+                            "source_branch": cr.source_branch,
+                            "target_branch": cr.target_branch,
                             "inline_threads": latest_threads,
                             "previous_head_sha": (
                                 latest_metadata.head_sha if latest_metadata is not None else ""
@@ -186,6 +190,7 @@ class ReviewOrchestrator:
                     final_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
                     final_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
                     _ensure_unchanged_review_revision(cr, final_cr)
+                    prompt_context_changed = _review_prompt_context_changed(cr, final_cr)
                     cr = final_cr
                     final_metadata = extract_metadata(
                         final_notes,
@@ -198,7 +203,8 @@ class ReviewOrchestrator:
                         skill.version,
                     )
                     if (
-                        final_threads != task_context.inline_threads
+                        prompt_context_changed
+                        or final_threads != task_context.inline_threads
                         or final_unlocated_findings != task_context.previous_unlocated_findings
                     ):
                         raise RuntimeError(
@@ -218,19 +224,6 @@ class ReviewOrchestrator:
 
             logger.info("Skill done findings=%s", len(result.findings))
 
-            existing_legacy_fingerprints = set(
-                previous_metadata.fingerprints if previous_metadata is not None else ()
-            )
-            legacy_fingerprints = set(existing_legacy_fingerprints)
-            legacy_findings: list[Finding] = []
-            legacy_suppressed_findings: list[Finding] = []
-            for finding in result.findings:
-                fingerprint = compute_fingerprint(skill.name, skill.version, finding)
-                if fingerprint in existing_legacy_fingerprints:
-                    legacy_suppressed_findings.append(finding)
-                    continue
-                legacy_fingerprints.add(fingerprint)
-                legacy_findings.append(finding)
             consolidate_github_review = (
                 self._platform_publish
                 and self.adapter.platform_name == "github"
@@ -241,45 +234,31 @@ class ReviewOrchestrator:
             )
             if self._platform_publish:
                 platform_publisher = cast(PlatformPublisher, self.publisher)
-                is_legacy_migration = (
-                    previous_metadata is not None and previous_metadata.schema_version < 2
-                )
-                publish_result = (
-                    result
-                    if not is_legacy_migration
-                    else result.model_copy(update={"findings": legacy_findings})
-                )
-                outcome = await platform_publisher.publish(
-                    cr,
-                    publish_result,
-                    skill.name,
-                    skill.version,
-                    None,
-                    existing_notes=notes,
-                    metadata_findings=(legacy_suppressed_findings if is_legacy_migration else None),
-                    publish_summary=not consolidate_github_review,
-                )
+                publish_result = result
+                approval_count = self._approval_finding_count(publish_result.findings)
+                try:
+                    outcome = await platform_publisher.publish(
+                        cr,
+                        publish_result,
+                        skill.name,
+                        skill.version,
+                        existing_notes=notes,
+                        publish_summary=not consolidate_github_review,
+                    )
+                except Exception:
+                    if approval_count:
+                        await self._maybe_update_approval(cr, resolved_ref, approval_count)
+                    raise
             else:
-                legacy_result = result.model_copy(update={"findings": legacy_findings})
-                publish_result = legacy_result
+                publish_result = result
                 outcome = await self.publisher.publish(
                     cr,
-                    legacy_result,
+                    result,
                     skill.name,
                     skill.version,
-                    sorted(legacy_fingerprints),
                     existing_notes=notes,
                 )
-            approval_count = len(publish_result.findings)
-            if self.settings.auto_approve_ignore_low_severity:
-                non_low = [f for f in publish_result.findings if f.severity != "low"]
-                if len(non_low) != approval_count:
-                    logger.info(
-                        "Approval check: ignoring %s low-severity findings, effective_count=%s",
-                        approval_count - len(non_low),
-                        len(non_low),
-                    )
-                approval_count = len(non_low)
+                approval_count = self._approval_finding_count(publish_result.findings)
             approved = await self._maybe_update_approval(
                 cr,
                 resolved_ref,
@@ -301,6 +280,19 @@ class ReviewOrchestrator:
             if review_workspace is not None:
                 self.repo_manager.cleanup_review_workspace(review_workspace)
             detach_review_session_logging(log_session)
+
+    def _approval_finding_count(self, findings: list[Finding]) -> int:
+        count = len(findings)
+        if not self.settings.auto_approve_ignore_low_severity:
+            return count
+        non_low_count = sum(finding.severity != "low" for finding in findings)
+        if non_low_count != count:
+            logger.info(
+                "Approval check: ignoring %s low-severity findings, effective_count=%s",
+                count - non_low_count,
+                non_low_count,
+            )
+        return non_low_count
 
     async def _resolve_project_ref(self) -> str:
         if self._resolved_project_ref is not None:
@@ -375,6 +367,21 @@ def _ensure_unchanged_review_revision(original: ChangeRequest, latest: ChangeReq
         raise RuntimeError(
             "Change request revision changed during review; refusing to publish stale findings"
         )
+
+
+def _review_prompt_context_changed(original: ChangeRequest, latest: ChangeRequest) -> bool:
+    return any(
+        getattr(original, field) != getattr(latest, field)
+        for field in (
+            "title",
+            "description",
+            "author",
+            "source_branch",
+            "target_branch",
+            "state",
+            "web_url",
+        )
+    )
 
 
 def _combine_runtime_metadata(
