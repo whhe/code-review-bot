@@ -37,12 +37,27 @@ class GitHubClient:
         response.raise_for_status()
         return dict(response.json())
 
+    async def get_authenticated_user(self) -> dict[str, object]:
+        response = await self._client.get("/user")
+        response.raise_for_status()
+        return dict(response.json())
+
     async def list_issue_comments(
         self, owner: str, repo: str, issue_number: int
     ) -> list[dict[str, object]]:
-        response = await self._client.get(f"/repos/{owner}/{repo}/issues/{issue_number}/comments")
-        response.raise_for_status()
-        return list(response.json())
+        items: list[dict[str, object]] = []
+        page = 1
+        while True:
+            response = await self._client.get(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            batch = response.json()
+            items.extend(batch)
+            if len(batch) < 100:
+                return items
+            page += 1
 
     async def list_pull_reviews(
         self, owner: str, repo: str, pr_number: int
@@ -97,39 +112,103 @@ class GitHubClient:
         self, owner: str, repo: str, pr_number: int
     ) -> list[dict[str, object]]:
         """Return review threads from GitHub GraphQL API, each with isResolved and comments."""
-        query = """
-        query($owner: String!, $repo: String!, $number: Int!) {
+        threads_query = """
+        query($owner: String!, $repo: String!, $number: Int!, $threadsCursor: String) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $number) {
-              reviewThreads(first: 100) {
+              reviewThreads(first: 100, after: $threadsCursor) {
                 nodes {
+                  id
                   isResolved
                   comments(first: 100) {
                     nodes { body path line originalLine }
+                    pageInfo { hasNextPage endCursor }
                   }
                 }
+                pageInfo { hasNextPage endCursor }
               }
             }
           }
         }
         """
-        response = await self._client.post(
-            self.graphql_url,
-            json={
-                "query": query,
-                "variables": {"owner": owner, "repo": repo, "number": pr_number},
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        threads = (
-            (data.get("data") or {})
-            .get("repository", {})
-            .get("pullRequest", {})
-            .get("reviewThreads", {})
-            .get("nodes", [])
-        )
-        return list(threads)
+        comments_query = """
+        query($threadId: ID!, $commentsCursor: String) {
+          node(id: $threadId) {
+            ... on PullRequestReviewThread {
+              comments(first: 100, after: $commentsCursor) {
+                nodes { body path line originalLine }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }
+        """
+        threads: list[dict[str, object]] = []
+        threads_cursor: str | None = None
+        while True:
+            response = await self._client.post(
+                self.graphql_url,
+                json={
+                    "query": threads_query,
+                    "variables": {
+                        "owner": owner,
+                        "repo": repo,
+                        "number": pr_number,
+                        "threadsCursor": threads_cursor,
+                    },
+                },
+            )
+            response.raise_for_status()
+            repository = _graphql_data(response).get("repository") or {}
+            pull_request = repository.get("pullRequest") or {}
+            connection = pull_request.get("reviewThreads") or {}
+            page_threads = list(connection.get("nodes") or [])
+            for thread in page_threads:
+                await self._load_remaining_thread_comments(thread, comments_query)
+            threads.extend(page_threads)
+
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                return threads
+            threads_cursor = _next_cursor(page_info, "review threads")
+
+    async def _load_remaining_thread_comments(
+        self,
+        thread: dict[str, object],
+        query: str,
+    ) -> None:
+        comments = thread.get("comments") or {}
+        page_info = comments.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            return
+
+        thread_id = thread.get("id")
+        if not isinstance(thread_id, str) or not thread_id:
+            raise ValueError("GitHub review thread pagination response is missing the thread id")
+
+        nodes = list(comments.get("nodes") or [])
+        comments_cursor = _next_cursor(page_info, "review thread comments")
+        while True:
+            response = await self._client.post(
+                self.graphql_url,
+                json={
+                    "query": query,
+                    "variables": {
+                        "threadId": thread_id,
+                        "commentsCursor": comments_cursor,
+                    },
+                },
+            )
+            response.raise_for_status()
+            node = _graphql_data(response).get("node") or {}
+            connection = node.get("comments") or {}
+            nodes.extend(connection.get("nodes") or [])
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                comments["nodes"] = nodes
+                comments["pageInfo"] = {"hasNextPage": False, "endCursor": None}
+                return
+            comments_cursor = _next_cursor(page_info, "review thread comments")
 
     async def create_pull_comment(
         self,
@@ -172,3 +251,29 @@ class GitHubClient:
         )
         response.raise_for_status()
         return dict(response.json())
+
+
+def _graphql_data(response: httpx.Response) -> dict[str, object]:
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("GitHub GraphQL response is not a JSON object")
+
+    errors = payload.get("errors")
+    if errors:
+        messages = [
+            str(error.get("message") or error) for error in errors if isinstance(error, dict)
+        ]
+        detail = "; ".join(messages) if messages else str(errors)
+        raise RuntimeError(f"GitHub GraphQL query failed: {detail}")
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("GitHub GraphQL response is missing data")
+    return data
+
+
+def _next_cursor(page_info: dict[str, object], connection_name: str) -> str:
+    cursor = page_info.get("endCursor")
+    if not isinstance(cursor, str) or not cursor:
+        raise ValueError(f"GitHub {connection_name} pagination response is missing endCursor")
+    return cursor

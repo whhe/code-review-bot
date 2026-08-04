@@ -1,6 +1,13 @@
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, PrivateAttr, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 _SEVERITIES = ("critical", "high", "medium", "low")
 
@@ -15,6 +22,33 @@ class Finding(BaseModel):
     anchor_text: str = ""
     reason: str
     confidence: int = Field(ge=0, le=100)
+    _legacy_anchor_text: str = PrivateAttr(default="")
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _capture_legacy_anchor_text(
+        cls,
+        value: Any,
+        handler: ModelWrapValidatorHandler["Finding"],
+    ) -> "Finding":
+        if isinstance(value, cls):
+            return handler(value)
+        persisted_legacy_anchor = (
+            value.get("legacy_anchor_text") if isinstance(value, dict) else None
+        )
+        raw_anchor = value.get("anchor_text") if isinstance(value, dict) else None
+        finding = handler(value)
+        if isinstance(persisted_legacy_anchor, str):
+            finding._legacy_anchor_text = persisted_legacy_anchor
+        else:
+            finding._legacy_anchor_text = (
+                raw_anchor if isinstance(raw_anchor, str) else finding.anchor_text
+            )
+        return finding
+
+    @property
+    def legacy_anchor_text(self) -> str:
+        return self._legacy_anchor_text
 
     @field_validator("severity", mode="before")
     @classmethod
@@ -70,6 +104,15 @@ class Finding(BaseModel):
             end = value[-1]
             return f"{start}-{end}" if str(start) != str(end) else str(start)
         return value
+
+    @field_validator("anchor_text", mode="before")
+    @classmethod
+    def _normalize_anchor_text(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        lines = [line.strip() for line in value.splitlines() if line.strip()]
+        value = lines[0] if lines else ""
+        return value[:80]
 
 
 class SkillResult(BaseModel):

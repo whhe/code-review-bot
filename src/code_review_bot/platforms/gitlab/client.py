@@ -40,12 +40,32 @@ class GitLabClient:
         response.raise_for_status()
         return dict(response.json())
 
+    async def get_authenticated_user(self) -> dict[str, object]:
+        response = await self._client.get("/user")
+        response.raise_for_status()
+        return dict(response.json())
+
     async def list_merge_request_notes(
         self, project_id: int, mr_iid: int
     ) -> list[dict[str, object]]:
-        response = await self._client.get(f"/projects/{project_id}/merge_requests/{mr_iid}/notes")
-        response.raise_for_status()
-        return list(response.json())
+        items: list[dict[str, object]] = []
+        page = 1
+        while True:
+            response = await self._client.get(
+                f"/projects/{project_id}/merge_requests/{mr_iid}/notes",
+                params={
+                    "per_page": 100,
+                    "page": page,
+                    "order_by": "created_at",
+                    "sort": "asc",
+                },
+            )
+            response.raise_for_status()
+            batch = response.json()
+            items.extend(batch)
+            if len(batch) < 100:
+                return items
+            page += 1
 
     async def list_merge_request_discussions(
         self, project_id: int, mr_iid: int

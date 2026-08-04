@@ -33,7 +33,7 @@ src/code_review_bot/
 ├── review/
 │   ├── orchestrator.py     # ReviewOrchestrator — top-level review flow
 │   ├── runner.py           # CodingAgentReviewRunner — calls agent, parses JSON result
-│   ├── context.py          # fingerprinting and metadata parsing
+│   ├── context.py          # prior-review metadata parsing
 │   ├── file_filter.py      # FileFilter — include/exclude glob filtering
 │   ├── models.py           # ReviewTaskContext, ReviewOutcome
 │   └── publish/
@@ -59,13 +59,18 @@ src/code_review_bot/
    agent prompt (system output contract + task context + skill reference + MR metadata).
 3. `CodingAgentReviewRunner` passes the prompt to the `CodingAgent` and parses the JSON
    `SkillResult` from the response (with `json-repair` as fallback for malformed output).
-4. Findings are filtered by `FileFilter`, then deduplicated by SHA-256 fingerprint against the
-   prior review's stored metadata. All inline comment threads (resolved and open) are included in
-   the prompt via `<inline_threads>`; the agent applies the embedded rules to decide whether to
-   re-report each one.
-5. `ReviewPublisher.publish()` posts inline diff comments and formats the summary, storing the new
-   fingerprint set in hidden metadata for the next run. GitLab and GitHub without automatic
-   approval post it as a note; GitHub with automatic approval defers it to the final review body.
+4. All inline comment threads (resolved and open) and prior findings that could only be published
+   in a summary are included in the prompt; summary history is accepted only from the configured
+   or auto-discovered authenticated platform user. The agent must omit the same defect instance
+   while retaining independent issues with similar patterns. Before platform publication, the
+   orchestrator verifies that the change-request revision is unchanged, refreshes inline threads
+   and summary-only finding history, then reruns once if either review-history source changed.
+   A revision change or another history change aborts publication rather than posting stale
+   findings.
+5. Findings are filtered by `FileFilter`, then `ReviewPublisher.publish()` posts inline diff
+   comments and formats the summary. GitLab and GitHub without automatic approval post it as a
+   note; GitHub with automatic approval defers it to the final review body. Hidden metadata retains
+   the reviewed head, skill identity, and summary-only finding history for the next run.
    Summary notes end with a GitHub repository attribution line containing the formatted agent type
    and skill fingerprint, followed by the model and token-usage line. The displayed model uses
    `ACP_MODEL` when set, otherwise `ANTHROPIC_MODEL` for Claude or `OPENCODE_MODEL` for OpenCode;

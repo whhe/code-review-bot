@@ -5,24 +5,43 @@ import re
 
 from pydantic import BaseModel, Field, ValidationError
 
+from code_review_bot.skill.protocol import Finding
+
 logger = logging.getLogger(__name__)
 
-METADATA_RE = re.compile(r"<!-- code-review-bot:(?P<json>\{.*?\}) -->", re.DOTALL)
+BOT_METADATA_PREFIX = "<!-- code-review-bot:"
+METADATA_RE = re.compile(
+    rf"{re.escape(BOT_METADATA_PREFIX)}(?P<json>\{{.*?\}}) -->",
+    re.DOTALL,
+)
+MAX_FINDING_HISTORY_CHARS = 30_000
+MAX_FINDING_HISTORY_ITEMS = 50
+MAX_METADATA_FINDING_TEXT_CHARS = 4_000
+MAX_METADATA_FINDING_LOCATION_CHARS = 1_000
 
 
 class BotMetadata(BaseModel):
     note_id: int | None = None
+    schema_version: int = 1
     head_sha: str = ""
     skill: str = ""
     version: str = ""
     fingerprints: set[str] = Field(default_factory=set)
+    unlocated_findings: list[Finding] = Field(default_factory=list)
 
 
-def extract_metadata(notes: list[dict[str, object]]) -> BotMetadata | None:
-    """Find the most recent bot metadata comment in a list of MR notes."""
-    for note in reversed(notes):
+def extract_metadata(
+    notes: list[dict[str, object]],
+    *,
+    skill_name: str | None = None,
+    skill_version: str | None = None,
+) -> BotMetadata | None:
+    """Return the latest matching metadata with bounded recent finding history."""
+    parsed: list[BotMetadata] = []
+    for note in notes:
         body = str(note.get("body") or "")
-        match = METADATA_RE.search(body)
+        marker_index = body.rfind(BOT_METADATA_PREFIX)
+        match = METADATA_RE.fullmatch(body[marker_index:].strip()) if marker_index >= 0 else None
         if not match:
             continue
         try:
@@ -32,8 +51,117 @@ def extract_metadata(notes: list[dict[str, object]]) -> BotMetadata | None:
             logger.debug("Skipping malformed bot metadata note id=%s", note.get("id"))
             continue
         metadata.note_id = int(note["id"]) if note.get("id") is not None else None
-        return metadata
-    return None
+        parsed.append(metadata)
+
+    matching = [
+        metadata
+        for metadata in parsed
+        if (skill_name is None or metadata.skill == skill_name)
+        and (skill_version is None or metadata.version == skill_version)
+    ]
+    if not matching:
+        return None
+
+    latest = matching[-1]
+    merged_fingerprints: set[str] = set()
+    newest_findings: list[Finding] = []
+    seen_finding_identities: set[tuple[str, str, str, str, str, str, int]] = set()
+    for metadata in matching:
+        if metadata.skill != latest.skill or metadata.version != latest.version:
+            continue
+        merged_fingerprints.update(metadata.fingerprints)
+    for metadata in reversed(matching):
+        if metadata.skill != latest.skill or metadata.version != latest.version:
+            continue
+        for finding in reversed(metadata.unlocated_findings):
+            identity = finding_identity(finding)
+            if identity in seen_finding_identities:
+                continue
+            seen_finding_identities.add(identity)
+            newest_findings.append(finding)
+    latest.fingerprints = merged_fingerprints
+    latest.unlocated_findings = limit_finding_history(list(reversed(newest_findings)))
+    return latest
+
+
+def limit_finding_history(findings: list[Finding]) -> list[Finding]:
+    """Keep compact forms of the newest findings within fixed metadata budgets."""
+    retained_reversed: list[Finding] = []
+    used_chars = 2
+    candidates = findings[-MAX_FINDING_HISTORY_ITEMS:]
+    for finding in reversed(candidates):
+        compacted = _compact_metadata_finding(finding)
+        serialized = encode_metadata_json(serialize_metadata_finding(compacted))
+        additional_chars = len(serialized) + (1 if retained_reversed else 0)
+        if used_chars + additional_chars > MAX_FINDING_HISTORY_CHARS:
+            continue
+        retained_reversed.append(compacted)
+        used_chars += additional_chars
+
+    retained = list(reversed(retained_reversed))
+    dropped = len(findings) - len(retained)
+    if dropped:
+        logger.warning(
+            "Dropped %s review metadata findings outside the retention budgets "
+            "(max_items=%s, max_chars=%s)",
+            dropped,
+            MAX_FINDING_HISTORY_ITEMS,
+            MAX_FINDING_HISTORY_CHARS,
+        )
+    return retained
+
+
+def finding_identity(
+    finding: Finding,
+) -> tuple[str, str, str, str, str, str, int]:
+    """Return the identity of the Finding's final persisted representation."""
+    persisted = _compact_metadata_finding(finding)
+    return (
+        persisted.severity,
+        persisted.description,
+        persisted.file_path,
+        persisted.line_range,
+        persisted.anchor_text,
+        persisted.reason,
+        persisted.confidence,
+    )
+
+
+def serialize_metadata_finding(finding: Finding) -> dict[str, object]:
+    """Serialize a Finding while preserving legacy fingerprint compatibility data."""
+    payload: dict[str, object] = finding.model_dump(mode="json")
+    if finding.legacy_anchor_text != finding.anchor_text:
+        payload["legacy_anchor_text"] = finding.legacy_anchor_text
+    return payload
+
+
+def encode_metadata_json(value: object) -> str:
+    """Encode metadata exactly as it will be embedded in an HTML comment."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).replace(
+        "--", r"\u002d\u002d"
+    )
+
+
+def _compact_metadata_finding(finding: Finding) -> Finding:
+    updates = {
+        "description": _compact_metadata_text(finding.description, MAX_METADATA_FINDING_TEXT_CHARS),
+        "reason": _compact_metadata_text(finding.reason, MAX_METADATA_FINDING_TEXT_CHARS),
+        "file_path": _compact_metadata_text(finding.file_path, MAX_METADATA_FINDING_LOCATION_CHARS),
+        "line_range": _compact_metadata_text(
+            finding.line_range, MAX_METADATA_FINDING_LOCATION_CHARS
+        ),
+    }
+    if all(getattr(finding, field) == value for field, value in updates.items()):
+        return finding
+    return finding.model_copy(update=updates)
+
+
+def _compact_metadata_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    suffix = f"… [truncated sha256:{digest}]"
+    return value[: max_chars - len(suffix)] + suffix
 
 
 def compute_fingerprint(
@@ -42,13 +170,18 @@ def compute_fingerprint(
     finding: object,
     include_skill_version: bool = True,
 ) -> str:
+    """Build the legacy publisher fingerprint for extension compatibility."""
     parts = [skill_name]
     if include_skill_version:
         parts.append(skill_version)
     parts.extend(
         [
             getattr(finding, "file_path", ""),
-            _normalize(getattr(finding, "anchor_text", None) or getattr(finding, "line_range", "")),
+            _normalize(
+                getattr(finding, "legacy_anchor_text", None)
+                or getattr(finding, "anchor_text", None)
+                or getattr(finding, "line_range", "")
+            ),
             _normalize(getattr(finding, "description", "")),
         ]
     )

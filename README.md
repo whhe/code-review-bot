@@ -98,6 +98,7 @@ See `.env.example` for the full list with descriptions.
 | `GIT_PLATFORM_TYPE` | no | `gitlab` | Platform adapter to use (`gitlab` or `github`) |
 | `GIT_REPO_URL` | yes | — | Full HTTPS clone URL (e.g. `https://gitlab.com/group/project.git`). Binds clone, platform API host, and project identity; no separate project ID env var. |
 | `GIT_REPO_TOKEN` | yes | — | Access token with repo read permission and comment-posting rights |
+| `REVIEW_METADATA_AUTHOR_ID` | no | auto | Trusted platform user ID for hidden review metadata. Auto-discovered for PAT/GitLab tokens; set explicitly for GitHub App installation tokens. |
 | `GIT_PLATFORM_URL` | no | derived | API base override. GitLab: sub-path host (e.g. `https://example.com/gitlab`). GitHub: GHES REST root (e.g. `https://github.corp.example.com/api/v3`) when auto-derivation is wrong. GitHub.com needs no override (`api.github.com` is derived from `github.com` clone URLs). |
 | `CLONE_BASE_DIR` | no | system temp | Parent directory for per-review git workspaces |
 | `CLONE_DEPTH` | no | `0` | Initial shallow clone depth (`0` = full history); missing merge-base history is fetched automatically |

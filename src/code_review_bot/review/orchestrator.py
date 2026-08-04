@@ -12,10 +12,7 @@ from code_review_bot.logging_config import (
 from code_review_bot.platforms.models import ChangeRequest
 from code_review_bot.platforms.protocol import PlatformAdapter, ReviewBodyApprovalAdapter
 from code_review_bot.repo.manager import RepoManager
-from code_review_bot.review.context import (
-    compute_fingerprint,
-    extract_metadata,
-)
+from code_review_bot.review.context import BotMetadata, compute_fingerprint, extract_metadata
 from code_review_bot.review.file_filter import FileFilter
 from code_review_bot.review.models import ReviewOutcome, ReviewTaskContext
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
@@ -23,6 +20,7 @@ from code_review_bot.review.publish.platform import PlatformPublisher
 from code_review_bot.review.publish.protocol import ReviewPublisher
 from code_review_bot.review.runner import CodingAgentReviewRunner
 from code_review_bot.skill.loader import load_skill
+from code_review_bot.skill.protocol import Finding, RuntimeMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +47,7 @@ class ReviewOrchestrator:
         self.settings = settings
         self._resolved_project_ref: str | None = None
         self._platform_publish = isinstance(publisher, PlatformPublisher)
+        self._refresh_inline_threads = not isinstance(publisher, DebugMarkdownPublisher)
 
     @classmethod
     def from_settings(cls, settings: Settings, debug_output_dir: str = "") -> "ReviewOrchestrator":
@@ -98,7 +97,12 @@ class ReviewOrchestrator:
                 len(notes),
                 len(inline_threads),
             )
-            previous_metadata = extract_metadata(notes)
+            skill = load_skill(self.skill_path)
+            previous_metadata = extract_metadata(
+                notes,
+                skill_name=skill.name,
+                skill_version=skill.version,
+            )
 
             source_sha = cr.diff_refs.get("head_sha") or cr.head_sha
             target_sha = cr.diff_refs.get("start_sha") or cr.diff_refs.get("base_sha", "")
@@ -111,7 +115,11 @@ class ReviewOrchestrator:
             )
             logger.info("Local review workspace ready at %s", review_workspace)
 
-            skill = load_skill(self.skill_path)
+            previous_unlocated_findings = _matching_unlocated_findings(
+                previous_metadata,
+                skill.name,
+                skill.version,
+            )
             task_context = ReviewTaskContext(
                 change_request=cr,
                 workspace_path=str(review_workspace / "source"),
@@ -125,39 +133,104 @@ class ReviewOrchestrator:
                 excluded_patterns=self.settings.review_exclude,
                 included_patterns=self.settings.review_include,
                 inline_threads=inline_threads,
+                previous_unlocated_findings=previous_unlocated_findings,
             )
 
             logger.info("Running skill name=%s version=%s", skill.name, skill.version)
             agent = build_coding_agent(self.settings, review_workspace / "source")
-            result = await CodingAgentReviewRunner(
+            runner = CodingAgentReviewRunner(
                 agent,
                 agent_type=self.settings.acp_agent_type,
                 configured_model=self.settings.review_model_name,
-            ).review(skill, task_context)
+            )
+            result = await runner.review(skill, task_context)
+            if self._refresh_inline_threads:
+                latest_notes = await self.adapter.list_notes(resolved_ref, cr_id)
+                latest_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
+                latest_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
+                _ensure_unchanged_review_revision(cr, latest_cr)
+                cr = latest_cr
+                latest_metadata = extract_metadata(
+                    latest_notes,
+                    skill_name=skill.name,
+                    skill_version=skill.version,
+                )
+                latest_unlocated_findings = _matching_unlocated_findings(
+                    latest_metadata,
+                    skill.name,
+                    skill.version,
+                )
+                if (
+                    latest_threads != task_context.inline_threads
+                    or latest_unlocated_findings != task_context.previous_unlocated_findings
+                ):
+                    logger.info(
+                        "Prior review context changed during review; rerunning with latest state"
+                    )
+                    task_context = task_context.model_copy(
+                        update={
+                            "change_request": cr,
+                            "inline_threads": latest_threads,
+                            "previous_head_sha": (
+                                latest_metadata.head_sha if latest_metadata is not None else ""
+                            ),
+                            "previous_unlocated_findings": latest_unlocated_findings,
+                        }
+                    )
+                    stale_runtime = result.runtime
+                    result = await runner.review(skill, task_context)
+                    combined_runtime = _combine_runtime_metadata(stale_runtime, result.runtime)
+                    if combined_runtime is not None:
+                        result = result.with_runtime(combined_runtime)
+                    final_notes = await self.adapter.list_notes(resolved_ref, cr_id)
+                    final_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
+                    final_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
+                    _ensure_unchanged_review_revision(cr, final_cr)
+                    cr = final_cr
+                    final_metadata = extract_metadata(
+                        final_notes,
+                        skill_name=skill.name,
+                        skill_version=skill.version,
+                    )
+                    final_unlocated_findings = _matching_unlocated_findings(
+                        final_metadata,
+                        skill.name,
+                        skill.version,
+                    )
+                    if (
+                        final_threads != task_context.inline_threads
+                        or final_unlocated_findings != task_context.previous_unlocated_findings
+                    ):
+                        raise RuntimeError(
+                            "Prior review context changed during review; refusing to publish "
+                            "stale findings"
+                        )
+                    notes = final_notes
+                    previous_metadata = final_metadata
+                else:
+                    notes = latest_notes
+                    previous_metadata = latest_metadata
 
             file_filter = FileFilter(task_context.excluded_patterns, task_context.included_patterns)
             result.findings, file_excluded = file_filter.filter_findings(result.findings)
             if file_excluded:
                 logger.info("File filter excluded %s findings", file_excluded)
 
-            skill_raw_findings = len(result.findings)
-            existing_fingerprints = previous_metadata.fingerprints if previous_metadata else set()
-            new_findings = []
-            fingerprints = set(existing_fingerprints)
+            logger.info("Skill done findings=%s", len(result.findings))
+
+            existing_legacy_fingerprints = set(
+                previous_metadata.fingerprints if previous_metadata is not None else ()
+            )
+            legacy_fingerprints = set(existing_legacy_fingerprints)
+            legacy_findings: list[Finding] = []
+            legacy_suppressed_findings: list[Finding] = []
             for finding in result.findings:
                 fingerprint = compute_fingerprint(skill.name, skill.version, finding)
-                if fingerprint in existing_fingerprints:
+                if fingerprint in existing_legacy_fingerprints:
+                    legacy_suppressed_findings.append(finding)
                     continue
-                fingerprints.add(fingerprint)
-                new_findings.append(finding)
-            result.findings = new_findings
-
-            logger.info(
-                "Skill done raw_findings=%s after_fingerprint_filter=%s",
-                skill_raw_findings,
-                len(new_findings),
-            )
-
+                legacy_fingerprints.add(fingerprint)
+                legacy_findings.append(finding)
             consolidate_github_review = (
                 self._platform_publish
                 and self.adapter.platform_name == "github"
@@ -168,27 +241,38 @@ class ReviewOrchestrator:
             )
             if self._platform_publish:
                 platform_publisher = cast(PlatformPublisher, self.publisher)
+                is_legacy_migration = (
+                    previous_metadata is not None and previous_metadata.schema_version < 2
+                )
+                publish_result = (
+                    result
+                    if not is_legacy_migration
+                    else result.model_copy(update={"findings": legacy_findings})
+                )
                 outcome = await platform_publisher.publish(
                     cr,
-                    result,
+                    publish_result,
                     skill.name,
                     skill.version,
-                    sorted(fingerprints),
+                    None,
                     existing_notes=notes,
+                    metadata_findings=(legacy_suppressed_findings if is_legacy_migration else None),
                     publish_summary=not consolidate_github_review,
                 )
             else:
+                legacy_result = result.model_copy(update={"findings": legacy_findings})
+                publish_result = legacy_result
                 outcome = await self.publisher.publish(
                     cr,
-                    result,
+                    legacy_result,
                     skill.name,
                     skill.version,
-                    sorted(fingerprints),
+                    sorted(legacy_fingerprints),
                     existing_notes=notes,
                 )
-            approval_count = len(new_findings)
+            approval_count = len(publish_result.findings)
             if self.settings.auto_approve_ignore_low_severity:
-                non_low = [f for f in new_findings if f.severity != "low"]
+                non_low = [f for f in publish_result.findings if f.severity != "low"]
                 if len(non_low) != approval_count:
                     logger.info(
                         "Approval check: ignoring %s low-severity findings, effective_count=%s",
@@ -284,3 +368,60 @@ class ReviewOrchestrator:
                 exc_info=True,
             )
             return None
+
+
+def _ensure_unchanged_review_revision(original: ChangeRequest, latest: ChangeRequest) -> None:
+    if original.head_sha != latest.head_sha or original.diff_refs != latest.diff_refs:
+        raise RuntimeError(
+            "Change request revision changed during review; refusing to publish stale findings"
+        )
+
+
+def _combine_runtime_metadata(
+    first: RuntimeMetadata | None,
+    second: RuntimeMetadata | None,
+) -> RuntimeMetadata | None:
+    if first is None and second is None:
+        return None
+
+    def combine_label(attribute: str) -> str | None:
+        values: list[str] = []
+        for runtime in (first, second):
+            if runtime is None:
+                continue
+            value = getattr(runtime, attribute)
+            if isinstance(value, str) and value:
+                values.append(value)
+        unique = list(dict.fromkeys(values))
+        if len(unique) == 1:
+            return unique[0]
+        if unique:
+            return f"multiple {attribute}s used: {', '.join(unique)}"
+        return None
+
+    def combine_usage(attribute: str) -> int | None:
+        if first is None or second is None:
+            return None
+        first_value = getattr(first, attribute)
+        second_value = getattr(second, attribute)
+        if first_value is None or second_value is None:
+            return None
+        return first_value + second_value
+
+    return RuntimeMetadata(
+        agent_type=combine_label("agent_type"),
+        model=combine_label("model"),
+        input_tokens=combine_usage("input_tokens"),
+        output_tokens=combine_usage("output_tokens"),
+        total_tokens=combine_usage("total_tokens"),
+    )
+
+
+def _matching_unlocated_findings(
+    metadata: BotMetadata | None,
+    skill_name: str,
+    skill_version: str,
+) -> list[Finding]:
+    if metadata is None or metadata.skill != skill_name or metadata.version != skill_version:
+        return []
+    return list(metadata.unlocated_findings)

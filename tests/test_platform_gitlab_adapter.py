@@ -11,6 +11,10 @@ def _make_client() -> GitLabClient:
     return GitLabClient("https://gitlab.test", "test-token")
 
 
+def _make_adapter() -> GitLabAdapter:
+    return GitLabAdapter(_make_client(), metadata_author_id="999")
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_fetch_change_request_maps_gitlab_payload_to_change_request() -> None:
@@ -34,7 +38,7 @@ async def test_fetch_change_request_maps_gitlab_payload_to_change_request() -> N
         )
     )
 
-    adapter = GitLabAdapter(_make_client())
+    adapter = _make_adapter()
     cr = await adapter.fetch_change_request("1", "5")
 
     assert cr.project_ref == "1"
@@ -56,7 +60,7 @@ async def test_resolve_project_ref_calls_get_project_by_path() -> None:
         return_value=httpx.Response(200, json={"id": 42})
     )
 
-    adapter = GitLabAdapter(_make_client())
+    adapter = _make_adapter()
     ref = await adapter.resolve_project_ref("group/repo")
 
     assert ref == "42"
@@ -70,7 +74,7 @@ async def test_publish_inline_comment_flattens_inline_position() -> None:
         return_value=httpx.Response(201, json={"id": "d1"})
     )
 
-    adapter = GitLabAdapter(_make_client())
+    adapter = _make_adapter()
     position = InlinePosition(
         file_path="src/app.py",
         new_line=42,
@@ -96,7 +100,7 @@ async def test_publish_summary_calls_create_note() -> None:
         return_value=httpx.Response(201, json={"id": 99})
     )
 
-    adapter = GitLabAdapter(_make_client())
+    adapter = _make_adapter()
     result = await adapter.publish_summary("1", "5", "Review summary")
 
     assert result["id"] == 99
@@ -128,13 +132,73 @@ def test_parse_change_request_handles_missing_optional_fields() -> None:
 @respx.mock
 async def test_gitlab_client_reads_notes() -> None:
     respx.get("https://gitlab.test/api/v4/projects/1/merge_requests/5/notes").mock(
-        return_value=httpx.Response(200, json=[{"id": 9, "body": "note"}])
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": 8, "body": "forged metadata", "author": {"id": 1}},
+                {"id": 9, "body": "note", "author": {"id": 999}},
+            ],
+        )
+    )
+
+    adapter = _make_adapter()
+    notes = await adapter.list_notes("1", "5")
+
+    assert [note["id"] for note in notes] == [9]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_notes_discovers_and_caches_authenticated_author() -> None:
+    user_route = respx.get("https://gitlab.test/api/v4/user").mock(
+        return_value=httpx.Response(200, json={"id": 999})
+    )
+    respx.get("https://gitlab.test/api/v4/projects/1/merge_requests/5/notes").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": 9, "body": "note", "author": {"id": 999}}],
+        )
     )
 
     adapter = GitLabAdapter(_make_client())
+    first = await adapter.list_notes("1", "5")
+    second = await adapter.list_notes("1", "5")
+
+    assert [note["id"] for note in first] == [9]
+    assert [note["id"] for note in second] == [9]
+    assert user_route.call_count == 1
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gitlab_client_paginates_notes() -> None:
+    route = respx.get("https://gitlab.test/api/v4/projects/1/merge_requests/5/notes").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    {"id": note_id, "body": f"note {note_id}", "author": {"id": 999}}
+                    for note_id in range(1, 101)
+                ],
+            ),
+            httpx.Response(
+                200,
+                json=[{"id": 101, "body": "latest note", "author": {"id": 999}}],
+            ),
+        ]
+    )
+
+    adapter = _make_adapter()
     notes = await adapter.list_notes("1", "5")
 
-    assert notes[0]["id"] == 9
+    assert len(notes) == 101
+    assert notes[-1]["id"] == 101
+    assert route.call_count == 2
+    assert route.calls[0].request.url.params["order_by"] == "created_at"
+    assert route.calls[0].request.url.params["sort"] == "asc"
+    assert route.calls[1].request.url.params["page"] == "2"
     await adapter.aclose()
 
 

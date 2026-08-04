@@ -13,7 +13,10 @@ def build_platform_adapter(settings: Settings) -> PlatformAdapter:
         from code_review_bot.platforms.gitlab.client import GitLabClient
 
         client = GitLabClient(settings.git_platform_url, settings.git_repo_token)
-        return GitLabAdapter(client)
+        return GitLabAdapter(
+            client,
+            metadata_author_id=settings.review_metadata_author_id,
+        )
 
     if settings.git_platform_type == "github":
         from code_review_bot.platforms.github.adapter import GitHubAdapter
@@ -24,7 +27,10 @@ def build_platform_adapter(settings: Settings) -> PlatformAdapter:
             base_url=settings.github_rest_api_base,
             graphql_url=settings.github_graphql_url,
         )
-        return GitHubAdapter(client)
+        return GitHubAdapter(
+            client,
+            metadata_author_id=settings.review_metadata_author_id,
+        )
 
     raise ValueError(
         f"Unsupported git platform: {settings.git_platform_type!r}. "

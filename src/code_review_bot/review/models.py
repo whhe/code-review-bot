@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_review_bot.platforms.models import ChangeRequest, InlineThread
+from code_review_bot.skill.protocol import Finding
 
 __all__ = ["InlineThread", "ReviewTaskContext", "ReviewOutcome"]
 
@@ -20,6 +21,7 @@ class ReviewTaskContext(BaseModel):
     excluded_patterns: list[str] = Field(default_factory=list)
     included_patterns: list[str] = Field(default_factory=list)
     inline_threads: list[InlineThread] = Field(default_factory=list)
+    previous_unlocated_findings: list[Finding] = Field(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

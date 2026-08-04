@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from code_review_bot.platforms.models import ChangeRequest
+from code_review_bot.review.context import compute_fingerprint
 from code_review_bot.review.models import ReviewTaskContext
 from code_review_bot.skill.loader import load_skill
 from code_review_bot.skill.protocol import Finding, SkillResult
@@ -123,6 +124,40 @@ def test_finding_accepts_structured_line_range() -> None:
     )
 
     assert finding.line_range == "12-14"
+
+
+def test_nested_finding_validation_preserves_legacy_anchor_state() -> None:
+    raw_anchor = "first changed line\nsecond changed line"
+    finding = Finding(
+        severity="high",
+        description="Risk",
+        file_path="a.py",
+        line_range="1-2",
+        anchor_text=raw_anchor,
+        reason="Changed lines are unsafe",
+        confidence=90,
+    )
+    original_fingerprint = compute_fingerprint("default", "1", finding)
+    result = SkillResult(summary="Review", findings=[finding])
+
+    result_finding = result.findings[0]
+    assert result_finding.legacy_anchor_text == raw_anchor
+    assert finding.legacy_anchor_text == raw_anchor
+    assert compute_fingerprint("default", "1", result_finding) == original_fingerprint
+
+    base_context = make_task_context()
+
+    context = ReviewTaskContext.model_validate(
+        {
+            **base_context.model_dump(mode="json"),
+            "previous_unlocated_findings": [finding],
+        }
+    )
+
+    restored = context.previous_unlocated_findings[0]
+    assert restored.legacy_anchor_text == raw_anchor
+    assert finding.legacy_anchor_text == raw_anchor
+    assert compute_fingerprint("default", "1", restored) == original_fingerprint
 
 
 @pytest.mark.asyncio

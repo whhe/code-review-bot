@@ -1,13 +1,30 @@
 """Formats review findings and bot metadata into Markdown comment text."""
 
-import json
+import hashlib
+import logging
 
 from code_review_bot.platforms.models import ChangeRequest
+from code_review_bot.review.context import (
+    BOT_METADATA_PREFIX,
+    encode_metadata_json,
+    limit_finding_history,
+    serialize_metadata_finding,
+)
 from code_review_bot.skill.protocol import Finding, RuntimeMetadata, count_findings_by_severity
 
-BOT_METADATA_PREFIX = "<!-- code-review-bot:"
+logger = logging.getLogger(__name__)
+
 CODE_REVIEW_BOT_LABEL = "whhe/code-review-bot"
 CODE_REVIEW_BOT_URL = "https://github.com/whhe/code-review-bot"
+MAX_REVIEW_NOTE_CHARS = 60_000
+MAX_LEGACY_FINGERPRINT_CHARS = 10_000
+MAX_VISIBLE_FINDINGS = 20
+MAX_VISIBLE_SUMMARY_CHARS = 2_000
+MAX_VISIBLE_FINDING_TEXT_CHARS = 160
+MAX_VISIBLE_LOCATION_CHARS = 200
+MAX_RUNTIME_LINE_CHARS = 1_000
+MAX_FALLBACK_FIELD_CHARS = 1_000
+TRUNCATION_NOTICE = "[Review output truncated to stay within platform comment limits.]"
 
 AGENT_DISPLAY_NAMES: dict[str, str] = {
     "claude": "Claude Code",
@@ -27,20 +44,24 @@ def format_review_note(
     cr: ChangeRequest,
     skill_name: str,
     skill_version: str,
-    fingerprints: list[str],
+    fingerprints: list[str] | None = None,
     summary: str | None = None,
     severity_counts: dict[str, int] | None = None,
     located_count: int = 0,
     unlocated_findings: list[Finding] | None = None,
     resolved_findings: list[Finding] | None = None,
+    metadata_findings: list[Finding] | None = None,
     runtime: RuntimeMetadata | None = None,
 ) -> str:
-    findings = unlocated_findings or []
+    findings = sorted(
+        unlocated_findings or [],
+        key=lambda finding: ("critical", "high", "medium", "low").index(finding.severity),
+    )
     counts = severity_counts or count_findings_by_severity(findings)
     lines = [
         "### Code Review",
         "",
-        summary or "No significant issues found.",
+        _compact_visible_text(summary or "No significant issues found.", MAX_VISIBLE_SUMMARY_CHARS),
         "",
         (
             "Severity: "
@@ -52,41 +73,155 @@ def format_review_note(
         f"Inline comments posted: {located_count}",
         "",
     ]
-    if findings:
+    visible_findings = findings[:MAX_VISIBLE_FINDINGS]
+    if visible_findings:
         lines.append("#### Findings without diff position (not in this MR's changed lines)")
         lines.append("")
-        for finding in findings:
+        for finding in visible_findings:
             label = SEVERITY_LABELS.get(finding.severity, finding.severity)
             lines.extend(
                 [
-                    f"- **[{label}]** `{finding.file_path}:{finding.line_range}`: "
-                    f"{finding.description}",
-                    f"  - Reason: {finding.reason}",
+                    f"- **[{label}]** `"
+                    f"{_compact_visible_text(finding.file_path, MAX_VISIBLE_LOCATION_CHARS)}:"
+                    f"{_compact_visible_text(finding.line_range, MAX_VISIBLE_LOCATION_CHARS)}`: "
+                    f"{_compact_visible_text(finding.description, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
+                    "  - Reason: "
+                    f"{_compact_visible_text(finding.reason, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
                 ]
             )
         lines.append("")
-    if resolved_findings:
+    omitted_findings = findings[MAX_VISIBLE_FINDINGS:]
+    remaining_slots = MAX_VISIBLE_FINDINGS - len(visible_findings)
+    visible_resolved = (resolved_findings or [])[:remaining_slots]
+    if visible_resolved:
         lines.append("#### Previously resolved (not re-reported)")
         lines.append("")
-        for finding in resolved_findings:
+        for finding in visible_resolved:
             label = SEVERITY_LABELS.get(finding.severity, finding.severity)
             lines.append(
-                f"- ~~**[{label}]** `{finding.file_path}:{finding.line_range}`: "
-                f"{finding.description}~~"
+                f"- ~~**[{label}]** `"
+                f"{_compact_visible_text(finding.file_path, MAX_VISIBLE_LOCATION_CHARS)}:"
+                f"{_compact_visible_text(finding.line_range, MAX_VISIBLE_LOCATION_CHARS)}`: "
+                f"{_compact_visible_text(finding.description, MAX_VISIBLE_FINDING_TEXT_CHARS)}~~"
             )
         lines.append("")
+    omitted_resolved = (resolved_findings or [])[remaining_slots:]
+    if omitted_findings or omitted_resolved:
+        omitted_counts = count_findings_by_severity(omitted_findings)
+        lines.extend(
+            [
+                TRUNCATION_NOTICE,
+                (
+                    "Omitted current findings: "
+                    f"Critical {omitted_counts['critical']} / "
+                    f"High {omitted_counts['high']} / "
+                    f"Medium {omitted_counts['medium']} / "
+                    f"Low {omitted_counts['low']}; "
+                    f"previously resolved {len(omitted_resolved)}."
+                ),
+                "",
+            ]
+        )
     if lines and lines[-1] != "":
         lines.append("")
-    lines.append(_format_attribution_line(runtime, skill_version))
-    lines.append(_format_runtime_line(runtime))
+    metadata_history = limit_finding_history(metadata_findings or [])
     metadata = {
+        "schema_version": 2,
         "head_sha": cr.head_sha,
         "skill": skill_name,
         "version": skill_version,
-        "fingerprints": sorted(fingerprints),
+        "unlocated_findings": [serialize_metadata_finding(finding) for finding in metadata_history],
     }
-    lines.append(f"{BOT_METADATA_PREFIX}{json.dumps(metadata, separators=(',', ':'))} -->")
-    return "\n".join(lines)
+    if fingerprints is not None:
+        metadata["fingerprints"] = _limit_legacy_fingerprints(fingerprints)
+    metadata_json = encode_metadata_json(metadata)
+    suffix = "\n".join(
+        [
+            _compact_visible_text(
+                _format_attribution_line(runtime, skill_version), MAX_RUNTIME_LINE_CHARS
+            ),
+            _compact_visible_text(_format_runtime_line(runtime), MAX_RUNTIME_LINE_CHARS),
+            f"{BOT_METADATA_PREFIX}{metadata_json} -->",
+        ]
+    )
+    visible_body = "\n".join(lines)
+    body = f"{visible_body}{suffix}"
+    if len(body) > MAX_REVIEW_NOTE_CHARS:
+        logger.warning(
+            "Formatted review note exceeds %s characters after compaction; "
+            "publishing a minimal fallback summary",
+            MAX_REVIEW_NOTE_CHARS,
+        )
+        fallback_metadata = {
+            **metadata,
+            "head_sha": _compact_visible_text(cr.head_sha, MAX_FALLBACK_FIELD_CHARS),
+            "skill": _compact_visible_text(skill_name, MAX_FALLBACK_FIELD_CHARS),
+            "version": _compact_visible_text(skill_version, MAX_FALLBACK_FIELD_CHARS),
+        }
+        fallback_metadata_json = encode_metadata_json(fallback_metadata)
+        fallback_lines = [
+            "### Code Review",
+            "",
+            TRUNCATION_NOTICE,
+            "",
+            (
+                "Severity: "
+                f"Critical {counts.get('critical', 0)} / "
+                f"High {counts.get('high', 0)} / "
+                f"Medium {counts.get('medium', 0)} / "
+                f"Low {counts.get('low', 0)}"
+            ),
+            f"Inline comments posted: {located_count}",
+            "",
+        ]
+        if findings:
+            finding = findings[0]
+            label = SEVERITY_LABELS.get(finding.severity, finding.severity)
+            fallback_lines.extend(
+                [
+                    "#### Highest-priority finding without diff position",
+                    "",
+                    f"- **[{label}]** `"
+                    f"{_compact_visible_text(finding.file_path, MAX_VISIBLE_LOCATION_CHARS)}:"
+                    f"{_compact_visible_text(finding.line_range, MAX_VISIBLE_LOCATION_CHARS)}`: "
+                    f"{_compact_visible_text(finding.description, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
+                    "  - Reason: "
+                    f"{_compact_visible_text(finding.reason, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
+                    "",
+                ]
+            )
+        fallback_lines.extend(
+            [
+                _compact_visible_text(
+                    _format_attribution_line(runtime, skill_version), MAX_FALLBACK_FIELD_CHARS
+                ),
+                _compact_visible_text(_format_runtime_line(runtime), MAX_FALLBACK_FIELD_CHARS),
+                f"{BOT_METADATA_PREFIX}{fallback_metadata_json} -->",
+            ]
+        )
+        body = "\n".join(fallback_lines)
+    return body
+
+
+def _limit_legacy_fingerprints(fingerprints: list[str]) -> list[str]:
+    retained_reversed: list[str] = []
+    used_chars = 2
+    for fingerprint in reversed(fingerprints):
+        serialized = encode_metadata_json(fingerprint)
+        additional_chars = len(serialized) + (1 if retained_reversed else 0)
+        if used_chars + additional_chars > MAX_LEGACY_FINGERPRINT_CHARS:
+            continue
+        retained_reversed.append(fingerprint)
+        used_chars += additional_chars
+    return list(reversed(retained_reversed))
+
+
+def _compact_visible_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    suffix = f"… [truncated sha256:{digest}]"
+    return value[: max_chars - len(suffix)] + suffix
 
 
 def _format_runtime_line(runtime: RuntimeMetadata | None) -> str:
