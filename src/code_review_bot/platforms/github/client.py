@@ -1,4 +1,8 @@
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
@@ -167,6 +171,13 @@ class GitHubClient:
             )
             if not isinstance(connection, dict):
                 if threads_cursor is None:
+                    logger.warning(
+                        "GitHub review threads connection is missing on the first page "
+                        "owner=%s repo=%s pr_number=%s",
+                        owner,
+                        repo,
+                        pr_number,
+                    )
                     return threads
                 raise RuntimeError("GitHub review threads connection disappeared during pagination")
             page_threads = list(connection.get("nodes") or [])

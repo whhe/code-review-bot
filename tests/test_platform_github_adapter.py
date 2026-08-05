@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -504,6 +505,33 @@ async def test_list_inline_threads_empty_when_no_threads() -> None:
     result = await adapter.list_inline_threads("alice/myrepo", "7")
 
     assert result == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "first_page_data",
+    [
+        {"repository": None},
+        {"repository": {"pullRequest": None}},
+        {"repository": {"pullRequest": {"reviewThreads": None}}},
+    ],
+)
+@respx.mock
+async def test_list_inline_threads_warns_when_first_page_connection_is_missing(
+    first_page_data: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    respx.post(f"{_BASE}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": first_page_data})
+    )
+
+    adapter = _make_adapter()
+    with caplog.at_level(logging.WARNING):
+        result = await adapter.list_inline_threads("alice/myrepo", "7")
+
+    assert result == []
+    assert "GitHub review threads connection is missing on the first page" in caplog.text
     await adapter.aclose()
 
 
