@@ -41,8 +41,7 @@ class PlatformPublisher:
         located_count, unlocated = await self._publish_inline(cr, result.findings)
         metadata_history_reversed: list[Finding] = []
         metadata_identities: set[tuple[str, str, str, str, str, str, int]] = set()
-        candidates = [*(metadata_findings or []), *unlocated]
-        for finding in reversed(candidates):
+        for finding in reversed(metadata_findings or []):
             identity = finding_identity(finding)
             if identity in metadata_identities:
                 continue
@@ -62,15 +61,27 @@ class PlatformPublisher:
             metadata_findings=metadata_history,
             runtime=result.runtime,
         )
-        for additional_body in format_additional_findings_notes(
+        additional_bodies = format_additional_findings_notes(
             unlocated,
             cr,
             skill_name,
             skill_version,
-        ):
-            await self.adapter.publish_summary(cr.project_ref, cr.cr_id, additional_body)
-        if publish_summary:
-            await self.adapter.publish_summary(cr.project_ref, cr.cr_id, body)
+        )
+        published_summary_count = 0
+        try:
+            if publish_summary:
+                await self.adapter.publish_summary(cr.project_ref, cr.cr_id, body)
+                published_summary_count += 1
+            for additional_body in additional_bodies:
+                await self.adapter.publish_summary(cr.project_ref, cr.cr_id, additional_body)
+                published_summary_count += 1
+        except Exception:
+            logger.exception(
+                "Review publication failed after posting %s inline comments and %s summary notes",
+                located_count,
+                published_summary_count,
+            )
+            raise
         return ReviewOutcome(
             summary=result.summary,
             published=True,

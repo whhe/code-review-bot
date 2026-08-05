@@ -6,9 +6,11 @@ import logging
 from code_review_bot.platforms.models import ChangeRequest
 from code_review_bot.review.context import (
     BOT_METADATA_PREFIX,
+    MAX_FINDING_HISTORY_CHARS,
     encode_metadata_json,
     finding_identity,
     limit_finding_history,
+    metadata_finding_chars,
     serialize_metadata_finding,
 )
 from code_review_bot.skill.protocol import Finding, RuntimeMetadata, count_findings_by_severity
@@ -231,16 +233,21 @@ def _partition_findings_for_notes(findings: list[Finding]) -> list[list[Finding]
     )
     batches: list[list[Finding]] = []
     current: list[Finding] = []
+    current_metadata_chars = 2
     for finding in ordered:
-        candidate = [*current, finding]
-        if len(candidate) <= MAX_VISIBLE_FINDINGS and len(limit_finding_history(candidate)) == len(
-            candidate
+        finding_chars = metadata_finding_chars(finding)
+        additional_chars = finding_chars + (1 if current else 0)
+        if (
+            len(current) < MAX_VISIBLE_FINDINGS
+            and current_metadata_chars + additional_chars <= MAX_FINDING_HISTORY_CHARS
         ):
-            current = candidate
+            current.append(finding)
+            current_metadata_chars += additional_chars
             continue
         if current:
             batches.append(current)
         current = [finding]
+        current_metadata_chars = 2 + finding_chars
     if current:
         batches.append(current)
     return batches

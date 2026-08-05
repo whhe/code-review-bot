@@ -6,6 +6,7 @@ from code_review_bot.review.context import (
     extract_metadata,
     serialize_metadata_finding,
 )
+from code_review_bot.review.publish import formatter as review_formatter
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
 from code_review_bot.review.publish.formatter import (
     BOT_METADATA_PREFIX,
@@ -403,6 +404,8 @@ async def test_publisher_makes_every_current_unlocated_finding_visible() -> None
     )
 
     assert len(adapter.summaries_posted) == 2
+    assert adapter.summaries_posted[0].startswith("### Code Review")
+    assert adapter.summaries_posted[1].startswith("### Additional code review findings")
     visible_output = "\n".join(
         body.split(BOT_METADATA_PREFIX, 1)[0] for body in adapter.summaries_posted
     )
@@ -467,6 +470,7 @@ async def test_publisher_recovers_history_after_partial_additional_summary_failu
         )
 
     assert len(first_adapter.summaries_posted) == 1
+    assert first_adapter.summaries_posted[0].startswith("### Code Review")
     partial_metadata = extract_metadata([{"id": 1, "body": first_adapter.summaries_posted[0]}])
     assert partial_metadata is not None
     published_descriptions = {
@@ -488,6 +492,51 @@ async def test_publisher_recovers_history_after_partial_additional_summary_failu
         for body in [*first_adapter.summaries_posted, *retry_adapter.summaries_posted]
     )
     assert all(visible_output.count(f"CURRENT-{index}\n") == 1 for index in range(41))
+
+
+@pytest.mark.asyncio
+async def test_publisher_logs_partial_progress_when_summary_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = FailingSummaryAdapter(fail_on_call=1)
+
+    with caplog.at_level("ERROR", logger="code_review_bot.review.publish.platform"):
+        with pytest.raises(RuntimeError, match="summary comment rejected"):
+            await PlatformPublisher(adapter).publish(
+                make_change_request(),
+                SkillResult(summary="Reviewed", findings=[make_finding()]),
+                skill_name="default",
+                skill_version="1",
+            )
+
+    assert "after posting 1 inline comments and 0 summary notes" in caplog.text
+
+
+def test_partition_findings_computes_each_metadata_size_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = review_formatter.metadata_finding_chars
+
+    def counting_metadata_finding_chars(finding: Finding) -> int:
+        nonlocal calls
+        calls += 1
+        return original(finding)
+
+    monkeypatch.setattr(
+        review_formatter,
+        "metadata_finding_chars",
+        counting_metadata_finding_chars,
+    )
+    findings = [
+        make_finding(description=f"CURRENT-{index}", line_range="outside diff")
+        for index in range(41)
+    ]
+
+    batches = review_formatter._partition_findings_for_notes(findings)
+
+    assert calls == len(findings)
+    assert sum(len(batch) for batch in batches) == len(findings)
 
 
 @pytest.mark.asyncio

@@ -102,6 +102,12 @@ def limit_finding_history(findings: list[Finding]) -> list[Finding]:
     return retained
 
 
+def metadata_finding_chars(finding: Finding) -> int:
+    """Return the encoded character cost of one compacted metadata finding."""
+    compacted = _compact_metadata_finding(finding)
+    return len(encode_metadata_json(serialize_metadata_finding(compacted)))
+
+
 def finding_identity(
     finding: Finding,
 ) -> tuple[str, str, str, str, str, str, int]:
