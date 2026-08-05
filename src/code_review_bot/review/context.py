@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -15,18 +16,17 @@ METADATA_RE = re.compile(
     re.DOTALL,
 )
 MAX_FINDING_HISTORY_CHARS = 30_000
-MAX_FINDING_HISTORY_ITEMS = 50
 MAX_METADATA_FINDING_TEXT_CHARS = 4_000
 MAX_METADATA_FINDING_LOCATION_CHARS = 1_000
+MAX_METADATA_ANCHOR_CHARS = 80
 
 
 class BotMetadata(BaseModel):
     note_id: int | None = None
-    schema_version: int = 1
+    schema_version: Literal[2]
     head_sha: str = ""
     skill: str = ""
     version: str = ""
-    fingerprints: set[str] = Field(default_factory=set)
     unlocated_findings: list[Finding] = Field(default_factory=list)
 
 
@@ -63,13 +63,8 @@ def extract_metadata(
         return None
 
     latest = matching[-1]
-    merged_fingerprints: set[str] = set()
     newest_findings: list[Finding] = []
     seen_finding_identities: set[tuple[str, str, str, str, str, str, int]] = set()
-    for metadata in matching:
-        if metadata.skill != latest.skill or metadata.version != latest.version:
-            continue
-        merged_fingerprints.update(metadata.fingerprints)
     for metadata in reversed(matching):
         if metadata.skill != latest.skill or metadata.version != latest.version:
             continue
@@ -79,36 +74,56 @@ def extract_metadata(
                 continue
             seen_finding_identities.add(identity)
             newest_findings.append(finding)
-    latest.fingerprints = merged_fingerprints
-    latest.unlocated_findings = limit_finding_history(list(reversed(newest_findings)))
+    latest.unlocated_findings = limit_finding_history(
+        list(reversed(newest_findings)),
+        prioritize_severity=True,
+    )
     return latest
 
 
-def limit_finding_history(findings: list[Finding]) -> list[Finding]:
-    """Keep compact forms of the newest findings within fixed metadata budgets."""
-    retained_reversed: list[Finding] = []
+def limit_finding_history(
+    findings: list[Finding],
+    *,
+    prioritize_severity: bool = False,
+) -> list[Finding]:
+    """Keep compact findings within fixed metadata budgets."""
+    indexed_findings = list(enumerate(findings))
+    if prioritize_severity:
+        indexed_findings.sort(
+            key=lambda item: (
+                ("critical", "high", "medium", "low").index(item[1].severity),
+                -item[0],
+            )
+        )
+    else:
+        indexed_findings.reverse()
+
+    retained_indexed: list[tuple[int, Finding]] = []
     used_chars = 2
-    candidates = findings[-MAX_FINDING_HISTORY_ITEMS:]
-    for finding in reversed(candidates):
+    for index, finding in indexed_findings:
         compacted = _compact_metadata_finding(finding)
         serialized = encode_metadata_json(serialize_metadata_finding(compacted))
-        additional_chars = len(serialized) + (1 if retained_reversed else 0)
+        additional_chars = len(serialized) + (1 if retained_indexed else 0)
         if used_chars + additional_chars > MAX_FINDING_HISTORY_CHARS:
             continue
-        retained_reversed.append(compacted)
+        retained_indexed.append((index, compacted))
         used_chars += additional_chars
 
-    retained = list(reversed(retained_reversed))
+    retained = [finding for _, finding in sorted(retained_indexed)]
     dropped = len(findings) - len(retained)
     if dropped:
         logger.warning(
-            "Dropped %s review metadata findings outside the retention budgets "
-            "(max_items=%s, max_chars=%s)",
+            "Dropped %s review metadata findings outside the retention budget (max_chars=%s)",
             dropped,
-            MAX_FINDING_HISTORY_ITEMS,
             MAX_FINDING_HISTORY_CHARS,
         )
     return retained
+
+
+def metadata_finding_chars(finding: Finding) -> int:
+    """Return the encoded character cost of one compacted metadata finding."""
+    compacted = _compact_metadata_finding(finding)
+    return len(encode_metadata_json(serialize_metadata_finding(compacted)))
 
 
 def finding_identity(
@@ -128,11 +143,8 @@ def finding_identity(
 
 
 def serialize_metadata_finding(finding: Finding) -> dict[str, object]:
-    """Serialize a Finding while preserving legacy fingerprint compatibility data."""
-    payload: dict[str, object] = finding.model_dump(mode="json")
-    if finding.legacy_anchor_text != finding.anchor_text:
-        payload["legacy_anchor_text"] = finding.legacy_anchor_text
-    return payload
+    """Serialize a Finding for storage in review metadata."""
+    return finding.model_dump(mode="json")
 
 
 def encode_metadata_json(value: object) -> str:
@@ -150,6 +162,7 @@ def _compact_metadata_finding(finding: Finding) -> Finding:
         "line_range": _compact_metadata_text(
             finding.line_range, MAX_METADATA_FINDING_LOCATION_CHARS
         ),
+        "anchor_text": _compact_metadata_text(finding.anchor_text, MAX_METADATA_ANCHOR_CHARS),
     }
     if all(getattr(finding, field) == value for field, value in updates.items()):
         return finding
@@ -162,31 +175,3 @@ def _compact_metadata_text(value: str, max_chars: int) -> str:
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
     suffix = f"… [truncated sha256:{digest}]"
     return value[: max_chars - len(suffix)] + suffix
-
-
-def compute_fingerprint(
-    skill_name: str,
-    skill_version: str,
-    finding: object,
-    include_skill_version: bool = True,
-) -> str:
-    """Build the legacy publisher fingerprint for extension compatibility."""
-    parts = [skill_name]
-    if include_skill_version:
-        parts.append(skill_version)
-    parts.extend(
-        [
-            getattr(finding, "file_path", ""),
-            _normalize(
-                getattr(finding, "legacy_anchor_text", None)
-                or getattr(finding, "anchor_text", None)
-                or getattr(finding, "line_range", "")
-            ),
-            _normalize(getattr(finding, "description", "")),
-        ]
-    )
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
-
-
-def _normalize(value: str) -> str:
-    return " ".join(value.lower().split())

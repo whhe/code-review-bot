@@ -10,6 +10,7 @@ from code_review_bot.review.models import ReviewOutcome
 from code_review_bot.review.publish.formatter import (
     BOT_METADATA_PREFIX,
     SEVERITY_LABELS,
+    format_additional_findings_notes,
     format_review_note,
 )
 from code_review_bot.skill.protocol import Finding, SkillResult, count_findings_by_severity
@@ -30,7 +31,6 @@ class DebugMarkdownPublisher:
         result: SkillResult,
         skill_name: str,
         skill_version: str,
-        fingerprints: list[str] | None = None,
         existing_notes: list[dict[str, object]] | None = None,
         resolved_findings: list[Finding] | None = None,
     ) -> ReviewOutcome:
@@ -46,10 +46,18 @@ class DebugMarkdownPublisher:
             resolved_findings=resolved_findings,
             skill_name=skill_name,
             skill_version=skill_version,
-            fingerprints=fingerprints,
             runtime=result.runtime,
         )
         summary_note_clean = _strip_metadata_comment(summary_note)
+        additional_notes = [
+            _strip_metadata_comment(note)
+            for note in format_additional_findings_notes(
+                unlocated,
+                cr,
+                skill_name,
+                skill_version,
+            )
+        ]
 
         # Sanitize project_ref for use in filename
         safe_ref = cr.project_ref.replace("/", "-").replace("\\", "-")[:64]
@@ -77,6 +85,8 @@ class DebugMarkdownPublisher:
             "",
             summary_note_clean,
         ]
+        for additional_note in additional_notes:
+            lines += ["", "---", "", additional_note]
 
         if inline_findings:
             lines += ["", "---", "", f"## Inline Comments ({len(inline_findings)})", ""]

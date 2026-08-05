@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -508,6 +509,33 @@ async def test_list_inline_threads_empty_when_no_threads() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "first_page_data",
+    [
+        {"repository": None},
+        {"repository": {"pullRequest": None}},
+        {"repository": {"pullRequest": {"reviewThreads": None}}},
+    ],
+)
+@respx.mock
+async def test_list_inline_threads_warns_when_first_page_connection_is_missing(
+    first_page_data: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    respx.post(f"{_BASE}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": first_page_data})
+    )
+
+    adapter = _make_adapter()
+    with caplog.at_level(logging.WARNING):
+        result = await adapter.list_inline_threads("alice/myrepo", "7")
+
+    assert result == []
+    assert "GitHub review threads connection is missing on the first page" in caplog.text
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_list_inline_threads_rejects_graphql_errors() -> None:
     respx.post(f"{_BASE}/graphql").mock(
@@ -721,7 +749,7 @@ async def test_list_inline_threads_paginates_thread_replies() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_list_inline_threads_handles_deleted_thread_during_comment_pagination() -> None:
+async def test_list_inline_threads_rejects_deleted_thread_during_comment_pagination() -> None:
     route = respx.post(f"{_BASE}/graphql").mock(
         side_effect=[
             httpx.Response(
@@ -766,10 +794,9 @@ async def test_list_inline_threads_handles_deleted_thread_during_comment_paginat
     )
 
     adapter = _make_adapter()
-    result = await adapter.list_inline_threads("alice/myrepo", "7")
+    with pytest.raises(RuntimeError, match="comments connection disappeared during pagination"):
+        await adapter.list_inline_threads("alice/myrepo", "7")
 
-    assert [thread.description for thread in result] == ["original issue"]
-    assert result[0].replies == []
     assert route.call_count == 2
     await adapter.aclose()
 
@@ -784,7 +811,7 @@ async def test_list_inline_threads_handles_deleted_thread_during_comment_paginat
     ],
 )
 @respx.mock
-async def test_list_inline_threads_handles_missing_connection_during_thread_pagination(
+async def test_list_inline_threads_rejects_missing_connection_during_thread_pagination(
     second_page_data: dict[str, object],
 ) -> None:
     route = respx.post(f"{_BASE}/graphql").mock(
@@ -831,9 +858,9 @@ async def test_list_inline_threads_handles_missing_connection_during_thread_pagi
     )
 
     adapter = _make_adapter()
-    result = await adapter.list_inline_threads("alice/myrepo", "7")
+    with pytest.raises(RuntimeError, match="threads connection disappeared during pagination"):
+        await adapter.list_inline_threads("alice/myrepo", "7")
 
-    assert [thread.description for thread in result] == ["original issue"]
     assert route.call_count == 2
     await adapter.aclose()
 

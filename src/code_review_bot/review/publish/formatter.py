@@ -6,8 +6,11 @@ import logging
 from code_review_bot.platforms.models import ChangeRequest
 from code_review_bot.review.context import (
     BOT_METADATA_PREFIX,
+    MAX_FINDING_HISTORY_CHARS,
     encode_metadata_json,
+    finding_identity,
     limit_finding_history,
+    metadata_finding_chars,
     serialize_metadata_finding,
 )
 from code_review_bot.skill.protocol import Finding, RuntimeMetadata, count_findings_by_severity
@@ -17,7 +20,6 @@ logger = logging.getLogger(__name__)
 CODE_REVIEW_BOT_LABEL = "whhe/code-review-bot"
 CODE_REVIEW_BOT_URL = "https://github.com/whhe/code-review-bot"
 MAX_REVIEW_NOTE_CHARS = 60_000
-MAX_LEGACY_FINGERPRINT_CHARS = 10_000
 MAX_VISIBLE_FINDINGS = 20
 MAX_VISIBLE_SUMMARY_CHARS = 2_000
 MAX_VISIBLE_FINDING_TEXT_CHARS = 160
@@ -44,7 +46,6 @@ def format_review_note(
     cr: ChangeRequest,
     skill_name: str,
     skill_version: str,
-    fingerprints: list[str] | None = None,
     summary: str | None = None,
     severity_counts: dict[str, int] | None = None,
     located_count: int = 0,
@@ -73,24 +74,15 @@ def format_review_note(
         f"Inline comments posted: {located_count}",
         "",
     ]
-    visible_findings = findings[:MAX_VISIBLE_FINDINGS]
+    finding_batches = _partition_findings_for_notes(findings)
+    visible_findings = finding_batches[0] if finding_batches else []
     if visible_findings:
         lines.append("#### Findings without diff position (not in this MR's changed lines)")
         lines.append("")
         for finding in visible_findings:
-            label = SEVERITY_LABELS.get(finding.severity, finding.severity)
-            lines.extend(
-                [
-                    f"- **[{label}]** `"
-                    f"{_compact_visible_text(finding.file_path, MAX_VISIBLE_LOCATION_CHARS)}:"
-                    f"{_compact_visible_text(finding.line_range, MAX_VISIBLE_LOCATION_CHARS)}`: "
-                    f"{_compact_visible_text(finding.description, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
-                    "  - Reason: "
-                    f"{_compact_visible_text(finding.reason, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
-                ]
-            )
+            lines.extend(_format_visible_finding(finding))
         lines.append("")
-    omitted_findings = findings[MAX_VISIBLE_FINDINGS:]
+    omitted_findings = [finding for batch in finding_batches[1:] for finding in batch]
     remaining_slots = MAX_VISIBLE_FINDINGS - len(visible_findings)
     visible_resolved = (resolved_findings or [])[:remaining_slots]
     if visible_resolved:
@@ -112,7 +104,7 @@ def format_review_note(
             [
                 TRUNCATION_NOTICE,
                 (
-                    "Omitted current findings: "
+                    "Additional current findings: "
                     f"Critical {omitted_counts['critical']} / "
                     f"High {omitted_counts['high']} / "
                     f"Medium {omitted_counts['medium']} / "
@@ -124,7 +116,16 @@ def format_review_note(
         )
     if lines and lines[-1] != "":
         lines.append("")
-    metadata_history = limit_finding_history(metadata_findings or [])
+    visible_identities = {finding_identity(finding) for finding in visible_findings}
+    metadata_candidates = [
+        finding
+        for finding in (metadata_findings or [])
+        if finding_identity(finding) not in visible_identities
+    ]
+    # limit_finding_history retains from the tail, so append visible findings
+    # in reverse severity order to preserve the highest-severity items first.
+    metadata_candidates.extend(reversed(visible_findings))
+    metadata_history = limit_finding_history(metadata_candidates)
     metadata = {
         "schema_version": 2,
         "head_sha": cr.head_sha,
@@ -132,8 +133,6 @@ def format_review_note(
         "version": skill_version,
         "unlocated_findings": [serialize_metadata_finding(finding) for finding in metadata_history],
     }
-    if fingerprints is not None:
-        metadata["fingerprints"] = _limit_legacy_fingerprints(fingerprints)
     metadata_json = encode_metadata_json(metadata)
     suffix = "\n".join(
         [
@@ -203,17 +202,68 @@ def format_review_note(
     return body
 
 
-def _limit_legacy_fingerprints(fingerprints: list[str]) -> list[str]:
-    retained_reversed: list[str] = []
-    used_chars = 2
-    for fingerprint in reversed(fingerprints):
-        serialized = encode_metadata_json(fingerprint)
-        additional_chars = len(serialized) + (1 if retained_reversed else 0)
-        if used_chars + additional_chars > MAX_LEGACY_FINGERPRINT_CHARS:
+def format_additional_findings_notes(
+    findings: list[Finding],
+    cr: ChangeRequest,
+    skill_name: str,
+    skill_version: str,
+) -> list[str]:
+    """Render current findings that do not fit in the primary summary as visible notes."""
+    notes: list[str] = []
+    for batch in _partition_findings_for_notes(findings)[1:]:
+        lines = ["### Additional code review findings", ""]
+        for finding in batch:
+            lines.extend(_format_visible_finding(finding))
+        metadata = {
+            "schema_version": 2,
+            "head_sha": cr.head_sha,
+            "skill": skill_name,
+            "version": skill_version,
+            "unlocated_findings": [
+                serialize_metadata_finding(finding) for finding in limit_finding_history(batch)
+            ],
+        }
+        lines.extend(["", f"{BOT_METADATA_PREFIX}{encode_metadata_json(metadata)} -->"])
+        notes.append("\n".join(lines))
+    return notes
+
+
+def _partition_findings_for_notes(findings: list[Finding]) -> list[list[Finding]]:
+    ordered = sorted(
+        findings,
+        key=lambda finding: ("critical", "high", "medium", "low").index(finding.severity),
+    )
+    batches: list[list[Finding]] = []
+    current: list[Finding] = []
+    current_metadata_chars = 2
+    for finding in ordered:
+        finding_chars = metadata_finding_chars(finding)
+        additional_chars = finding_chars + (1 if current else 0)
+        if (
+            len(current) < MAX_VISIBLE_FINDINGS
+            and current_metadata_chars + additional_chars <= MAX_FINDING_HISTORY_CHARS
+        ):
+            current.append(finding)
+            current_metadata_chars += additional_chars
             continue
-        retained_reversed.append(fingerprint)
-        used_chars += additional_chars
-    return list(reversed(retained_reversed))
+        if current:
+            batches.append(current)
+        current = [finding]
+        current_metadata_chars = 2 + finding_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _format_visible_finding(finding: Finding) -> list[str]:
+    label = SEVERITY_LABELS.get(finding.severity, finding.severity)
+    return [
+        f"- **[{label}]** `"
+        f"{_compact_visible_text(finding.file_path, MAX_VISIBLE_LOCATION_CHARS)}:"
+        f"{_compact_visible_text(finding.line_range, MAX_VISIBLE_LOCATION_CHARS)}`: "
+        f"{_compact_visible_text(finding.description, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
+        f"  - Reason: {_compact_visible_text(finding.reason, MAX_VISIBLE_FINDING_TEXT_CHARS)}",
+    ]
 
 
 def _compact_visible_text(value: str, max_chars: int) -> str:

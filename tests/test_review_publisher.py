@@ -1,12 +1,13 @@
 import pytest
 
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition
+from code_review_bot.review import context as review_context
 from code_review_bot.review.context import (
-    compute_fingerprint,
     encode_metadata_json,
     extract_metadata,
     serialize_metadata_finding,
 )
+from code_review_bot.review.publish import formatter as review_formatter
 from code_review_bot.review.publish.debug import DebugMarkdownPublisher
 from code_review_bot.review.publish.formatter import (
     BOT_METADATA_PREFIX,
@@ -93,6 +94,19 @@ class FailingInlineAdapter(FakeAdapter):
         position: InlinePosition,
     ) -> dict[str, object]:
         raise RuntimeError("inline comment rejected")
+
+
+class FailingSummaryAdapter(FakeAdapter):
+    def __init__(self, fail_on_call: int) -> None:
+        super().__init__()
+        self.fail_on_call = fail_on_call
+        self.summary_attempts = 0
+
+    async def publish_summary(self, project_ref: str, cr_id: str, body: str) -> dict[str, object]:
+        self.summary_attempts += 1
+        if self.summary_attempts == self.fail_on_call:
+            raise RuntimeError("summary comment rejected")
+        return await super().publish_summary(project_ref, cr_id, body)
 
 
 @pytest.mark.asyncio
@@ -191,14 +205,14 @@ async def test_publisher_records_metadata_only_findings_without_visible_summary_
 
 
 @pytest.mark.asyncio
-async def test_publisher_prioritizes_current_unlocated_finding_over_legacy_history() -> None:
+async def test_publisher_prioritizes_current_unlocated_finding_over_existing_history() -> None:
     adapter = FakeAdapter()
     publisher = PlatformPublisher(adapter)
     current = make_finding(
         description="CURRENT-NEW",
         line_range="outside diff",
     )
-    legacy = [
+    existing = [
         make_finding(
             description=f"old-{index}",
             file_path=f"src/old-{index}.py",
@@ -212,13 +226,13 @@ async def test_publisher_prioritizes_current_unlocated_finding_over_legacy_histo
         SkillResult(summary="Migration review", findings=[current]),
         skill_name="default",
         skill_version="1",
-        metadata_findings=legacy,
+        metadata_findings=existing,
     )
 
     metadata = extract_metadata([{"id": 1, "body": adapter.summaries_posted[0]}])
     assert metadata is not None
     descriptions = [finding.description for finding in metadata.unlocated_findings]
-    assert len(descriptions) == 50
+    assert len(descriptions) == 52
     assert descriptions[-1] == "CURRENT-NEW"
 
 
@@ -280,7 +294,7 @@ async def test_publisher_deduplicates_finding_across_metadata_serialization() ->
     assert body.count('"description":"A risky pattern"') == 1
 
 
-def test_review_note_preserves_legacy_anchor_across_metadata_round_trip() -> None:
+def test_review_note_preserves_normalized_anchor_across_metadata_round_trip() -> None:
     raw_anchor = "first changed line\nsecond changed line"
     original = make_finding(anchor_text=raw_anchor)
     body = format_review_note(
@@ -294,10 +308,26 @@ def test_review_note_preserves_legacy_anchor_across_metadata_round_trip() -> Non
 
     assert metadata is not None
     restored = metadata.unlocated_findings[0]
-    assert restored.legacy_anchor_text == raw_anchor
-    assert compute_fingerprint("default", "1", restored) == compute_fingerprint(
-        "default", "1", original
+    assert restored.anchor_text == "first changed line"
+
+
+def test_review_note_compacts_anchor_that_exceeds_metadata_budget() -> None:
+    original = make_finding().model_copy(update={"anchor_text": "x" * 40_000})
+
+    body = format_review_note(
+        cr=make_change_request(),
+        skill_name="default",
+        skill_version="1",
+        metadata_findings=[original],
     )
+    metadata = extract_metadata([{"id": 1, "body": body}])
+
+    assert metadata is not None
+    assert len(metadata.unlocated_findings) == 1
+    restored = metadata.unlocated_findings[0]
+    assert restored.description == original.description
+    assert len(restored.anchor_text) <= 80
+    assert "truncated sha256:" in restored.anchor_text
 
 
 def test_review_note_uses_budget_encoder_for_double_dash_metadata() -> None:
@@ -355,6 +385,229 @@ async def test_publisher_always_creates_summary_note() -> None:
 
 
 @pytest.mark.asyncio
+async def test_publisher_makes_every_current_unlocated_finding_visible() -> None:
+    adapter = FakeAdapter()
+    publisher = PlatformPublisher(adapter)
+    findings = [
+        make_finding(
+            severity="critical",
+            description=f"CURRENT-{index}",
+            line_range="outside diff",
+        )
+        for index in range(21)
+    ]
+
+    await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=findings),
+        skill_name="default",
+        skill_version="1",
+    )
+
+    assert len(adapter.summaries_posted) == 2
+    assert adapter.summaries_posted[0].startswith("### Code Review")
+    assert adapter.summaries_posted[1].startswith("### Additional code review findings")
+    visible_output = "\n".join(
+        body.split(BOT_METADATA_PREFIX, 1)[0] for body in adapter.summaries_posted
+    )
+    assert all(f"CURRENT-{index}" in visible_output for index in range(21))
+    assert all(BOT_METADATA_PREFIX in body for body in adapter.summaries_posted)
+
+
+@pytest.mark.asyncio
+async def test_publisher_metadata_retains_visible_critical_under_capacity_pressure() -> None:
+    adapter = FakeAdapter()
+    publisher = PlatformPublisher(adapter)
+    critical = make_finding(
+        severity="critical",
+        description="CRITICAL-CURRENT",
+        line_range="outside diff",
+    )
+    low_findings = [
+        make_finding(
+            severity="low",
+            description=f"LOW-{index}-" + "d" * 4_000,
+            reason="r" * 4_000,
+            line_range="outside diff",
+        )
+        for index in range(20)
+    ]
+
+    await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=[critical, *low_findings]),
+        skill_name="default",
+        skill_version="1",
+    )
+
+    metadata = extract_metadata(
+        [
+            {"id": index, "body": body}
+            for index, body in enumerate(adapter.summaries_posted, start=1)
+        ]
+    )
+    assert metadata is not None
+    assert "CRITICAL-CURRENT" in {finding.description for finding in metadata.unlocated_findings}
+
+
+@pytest.mark.asyncio
+async def test_publisher_merged_metadata_prioritizes_critical_across_summary_notes() -> None:
+    adapter = FakeAdapter()
+    critical = make_finding(
+        severity="critical",
+        description="CRITICAL-CURRENT-" + "d" * 4_000,
+        reason="r" * 4_000,
+        line_range="outside diff",
+    )
+    low_findings = [
+        make_finding(
+            severity="low",
+            description=f"LOW-{index}-" + "d" * 4_000,
+            reason="r" * 4_000,
+            line_range="outside diff",
+        )
+        for index in range(20)
+    ]
+
+    await PlatformPublisher(adapter).publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=[critical, *low_findings]),
+        skill_name="default",
+        skill_version="1",
+    )
+
+    assert len(adapter.summaries_posted) > 1
+    metadata = extract_metadata(
+        [
+            {"id": index, "body": body}
+            for index, body in enumerate(adapter.summaries_posted, start=1)
+        ]
+    )
+    assert metadata is not None
+    assert any(
+        finding.description.startswith("CRITICAL-CURRENT-")
+        for finding in metadata.unlocated_findings
+    )
+
+
+def test_review_note_metadata_prioritizes_visible_critical_when_only_one_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    critical = make_finding(severity="critical", description="CRITICAL-CURRENT")
+    low = make_finding(severity="low", description="LOW-CURRENT")
+    single_finding_budget = 2 + max(
+        review_context.metadata_finding_chars(critical),
+        review_context.metadata_finding_chars(low),
+    )
+    monkeypatch.setattr(
+        review_context,
+        "MAX_FINDING_HISTORY_CHARS",
+        single_finding_budget,
+    )
+
+    body = format_review_note(
+        make_change_request(),
+        skill_name="default",
+        skill_version="1",
+        unlocated_findings=[critical, low],
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert metadata is not None
+    assert [finding.description for finding in metadata.unlocated_findings] == ["CRITICAL-CURRENT"]
+
+
+@pytest.mark.asyncio
+async def test_publisher_recovers_history_after_partial_additional_summary_failure() -> None:
+    findings = [
+        make_finding(
+            severity="critical",
+            description=f"CURRENT-{index}",
+            line_range="outside diff",
+        )
+        for index in range(41)
+    ]
+    first_adapter = FailingSummaryAdapter(fail_on_call=2)
+
+    with pytest.raises(RuntimeError, match="summary comment rejected"):
+        await PlatformPublisher(first_adapter).publish(
+            make_change_request(),
+            SkillResult(summary="Reviewed", findings=findings),
+            skill_name="default",
+            skill_version="1",
+        )
+
+    assert len(first_adapter.summaries_posted) == 1
+    assert first_adapter.summaries_posted[0].startswith("### Code Review")
+    partial_metadata = extract_metadata([{"id": 1, "body": first_adapter.summaries_posted[0]}])
+    assert partial_metadata is not None
+    published_descriptions = {
+        finding.description for finding in partial_metadata.unlocated_findings
+    }
+    remaining = [
+        finding for finding in findings if finding.description not in published_descriptions
+    ]
+    retry_adapter = FakeAdapter()
+    await PlatformPublisher(retry_adapter).publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=remaining),
+        skill_name="default",
+        skill_version="1",
+    )
+
+    visible_output = "\n".join(
+        body.split(BOT_METADATA_PREFIX, 1)[0]
+        for body in [*first_adapter.summaries_posted, *retry_adapter.summaries_posted]
+    )
+    assert all(visible_output.count(f"CURRENT-{index}\n") == 1 for index in range(41))
+
+
+@pytest.mark.asyncio
+async def test_publisher_logs_partial_progress_when_summary_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = FailingSummaryAdapter(fail_on_call=1)
+
+    with caplog.at_level("ERROR", logger="code_review_bot.review.publish.platform"):
+        with pytest.raises(RuntimeError, match="summary comment rejected"):
+            await PlatformPublisher(adapter).publish(
+                make_change_request(),
+                SkillResult(summary="Reviewed", findings=[make_finding()]),
+                skill_name="default",
+                skill_version="1",
+            )
+
+    assert "after posting 1 inline comments and 0 summary notes" in caplog.text
+
+
+def test_partition_findings_computes_each_metadata_size_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = review_formatter.metadata_finding_chars
+
+    def counting_metadata_finding_chars(finding: Finding) -> int:
+        nonlocal calls
+        calls += 1
+        return original(finding)
+
+    monkeypatch.setattr(
+        review_formatter,
+        "metadata_finding_chars",
+        counting_metadata_finding_chars,
+    )
+    findings = [
+        make_finding(description=f"CURRENT-{index}", line_range="outside diff")
+        for index in range(41)
+    ]
+
+    batches = review_formatter._partition_findings_for_notes(findings)
+
+    assert calls == len(findings)
+    assert sum(len(batch) for batch in batches) == len(findings)
+
+
+@pytest.mark.asyncio
 async def test_publisher_can_defer_summary_to_platform_review() -> None:
     adapter = FakeAdapter()
     publisher = PlatformPublisher(adapter)
@@ -373,6 +626,33 @@ async def test_publisher_can_defer_summary_to_platform_review() -> None:
 
 
 @pytest.mark.asyncio
+async def test_publisher_deferred_review_still_posts_additional_finding_chunks() -> None:
+    adapter = FakeAdapter()
+    publisher = PlatformPublisher(adapter)
+    findings = [
+        make_finding(description=f"CURRENT-{index}", line_range="outside diff")
+        for index in range(21)
+    ]
+
+    outcome = await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=findings),
+        skill_name="default",
+        skill_version="1",
+        publish_summary=False,
+    )
+
+    assert len(adapter.summaries_posted) == 1
+    visible_output = "\n".join(
+        [
+            adapter.summaries_posted[0].split(BOT_METADATA_PREFIX, 1)[0],
+            outcome.review_body.split(BOT_METADATA_PREFIX, 1)[0],
+        ]
+    )
+    assert all(f"CURRENT-{index}" in visible_output for index in range(21))
+
+
+@pytest.mark.asyncio
 async def test_formatter_includes_review_metadata() -> None:
     body = format_review_note(
         cr=make_change_request(),
@@ -386,22 +666,7 @@ async def test_formatter_includes_review_metadata() -> None:
 
     assert BOT_METADATA_PREFIX in body
     assert '"head_sha":"head"' in body
-    assert '"fingerprints"' not in body
-
-
-def test_formatter_round_trips_legacy_fingerprints_when_provided() -> None:
-    body = format_review_note(
-        cr=make_change_request(),
-        skill_name="default",
-        skill_version="1",
-        fingerprints=["fp-a", "fp-b"],
-    )
-
-    metadata = extract_metadata([{"id": 1, "body": body}])
-
-    assert metadata is not None
-    assert metadata.schema_version == 2
-    assert metadata.fingerprints == {"fp-a", "fp-b"}
+    assert '"schema_version":2' in body
 
 
 def test_formatter_keeps_agent_text_inside_metadata_comment() -> None:
@@ -521,24 +786,6 @@ def test_formatter_keeps_critical_findings_visible_when_output_is_bounded() -> N
     assert len(body) <= 60_000
     assert "SECOND-CRITICAL" in visible_body
     assert "truncated sha256:" in visible_body
-
-
-def test_formatter_bounds_legacy_fingerprints_within_review_note_limit() -> None:
-    fingerprints = [f"{index:064x}" for index in range(2_000)]
-
-    body = format_review_note(
-        cr=make_change_request(),
-        summary="Reviewed",
-        fingerprints=fingerprints,
-        skill_name="default",
-        skill_version="1",
-    )
-
-    metadata = extract_metadata([{"id": 1, "body": body}])
-    assert len(body) <= 60_000
-    assert metadata is not None
-    assert len(metadata.fingerprints) < len(fingerprints)
-    assert fingerprints[-1] in metadata.fingerprints
 
 
 def test_formatter_degrades_to_minimal_summary_when_full_note_is_oversized() -> None:
@@ -743,3 +990,24 @@ async def test_debug_publisher_writes_findings_file(tmp_path: object) -> None:
     content = out_file.read_text(encoding="utf-8")
     assert "A risky pattern" in content
     assert outcome.inline_comments == 1
+
+
+@pytest.mark.asyncio
+async def test_debug_publisher_makes_every_unlocated_finding_visible(tmp_path: object) -> None:
+    from pathlib import Path
+
+    publisher = DebugMarkdownPublisher(output_dir=tmp_path)
+    findings = [
+        make_finding(description=f"CURRENT-{index}", line_range="outside diff")
+        for index in range(21)
+    ]
+
+    await publisher.publish(
+        make_change_request(),
+        SkillResult(summary="Review complete", findings=findings),
+        skill_name="default",
+        skill_version="1",
+    )
+
+    content = (Path(str(tmp_path)) / "project-1_cr-5.md").read_text(encoding="utf-8")
+    assert all(f"CURRENT-{index}" in content for index in range(21))

@@ -1,4 +1,8 @@
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
@@ -159,9 +163,23 @@ class GitHubClient:
                 },
             )
             response.raise_for_status()
-            repository = _graphql_data(response).get("repository") or {}
-            pull_request = repository.get("pullRequest") or {}
-            connection = pull_request.get("reviewThreads") or {}
+            data = _graphql_data(response)
+            repository = data.get("repository")
+            pull_request = repository.get("pullRequest") if isinstance(repository, dict) else None
+            connection = (
+                pull_request.get("reviewThreads") if isinstance(pull_request, dict) else None
+            )
+            if not isinstance(connection, dict):
+                if threads_cursor is None:
+                    logger.warning(
+                        "GitHub review threads connection is missing on the first page "
+                        "owner=%s repo=%s pr_number=%s",
+                        owner,
+                        repo,
+                        pr_number,
+                    )
+                    return threads
+                raise RuntimeError("GitHub review threads connection disappeared during pagination")
             page_threads = list(connection.get("nodes") or [])
             for thread in page_threads:
                 await self._load_remaining_thread_comments(thread, comments_query)
@@ -200,8 +218,12 @@ class GitHubClient:
                 },
             )
             response.raise_for_status()
-            node = _graphql_data(response).get("node") or {}
-            connection = node.get("comments") or {}
+            node = _graphql_data(response).get("node")
+            connection = node.get("comments") if isinstance(node, dict) else None
+            if not isinstance(connection, dict):
+                raise RuntimeError(
+                    "GitHub review thread comments connection disappeared during pagination"
+                )
             nodes.extend(connection.get("nodes") or [])
             page_info = connection.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
