@@ -667,6 +667,28 @@ async def test_review_restarts_when_prompt_change_request_metadata_changes() -> 
 
 
 @pytest.mark.asyncio
+async def test_review_restarts_when_head_repository_changes() -> None:
+    adapter = ApprovalTrackingAdapter()
+    initial_cr = _make_change_request(head_repo_url="https://github.test/owner-a/repo.git")
+    latest_cr = _make_change_request(head_repo_url="https://github.test/owner-b/repo.git")
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[initial_cr, latest_cr, latest_cr]
+    )
+    orchestrator = _make_orchestrator(adapter)
+
+    async with _stub_review_internals(
+        orchestrator,
+        SkillResult(summary="stale", findings=[]),
+        SkillResult(summary="fresh", findings=[]),
+    ) as review:
+        await orchestrator.review_change_request("5")
+
+    assert review.await_count == 2
+    assert review.await_args_list[1].args[1].change_request == latest_cr
+    assert orchestrator.publisher.publish.await_args.args[1].summary == "fresh"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
 async def test_review_updates_derived_branch_context_when_source_branch_changes() -> None:
     adapter = ApprovalTrackingAdapter()
     initial_cr = _make_change_request(source_branch="feature-old")

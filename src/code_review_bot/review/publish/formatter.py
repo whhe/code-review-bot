@@ -122,7 +122,9 @@ def format_review_note(
         for finding in (metadata_findings or [])
         if finding_identity(finding) not in visible_identities
     ]
-    metadata_candidates.extend(visible_findings)
+    # limit_finding_history retains from the tail, so append visible findings
+    # in reverse severity order to preserve the highest-severity items first.
+    metadata_candidates.extend(reversed(visible_findings))
     metadata_history = limit_finding_history(metadata_candidates)
     metadata = {
         "schema_version": 2,

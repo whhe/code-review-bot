@@ -1,6 +1,7 @@
 import pytest
 
 from code_review_bot.platforms.models import ChangeRequest, InlinePosition
+from code_review_bot.review import context as review_context
 from code_review_bot.review.context import (
     encode_metadata_json,
     extract_metadata,
@@ -447,6 +448,73 @@ async def test_publisher_metadata_retains_visible_critical_under_capacity_pressu
     )
     assert metadata is not None
     assert "CRITICAL-CURRENT" in {finding.description for finding in metadata.unlocated_findings}
+
+
+@pytest.mark.asyncio
+async def test_publisher_merged_metadata_prioritizes_critical_across_summary_notes() -> None:
+    adapter = FakeAdapter()
+    critical = make_finding(
+        severity="critical",
+        description="CRITICAL-CURRENT-" + "d" * 4_000,
+        reason="r" * 4_000,
+        line_range="outside diff",
+    )
+    low_findings = [
+        make_finding(
+            severity="low",
+            description=f"LOW-{index}-" + "d" * 4_000,
+            reason="r" * 4_000,
+            line_range="outside diff",
+        )
+        for index in range(20)
+    ]
+
+    await PlatformPublisher(adapter).publish(
+        make_change_request(),
+        SkillResult(summary="Reviewed", findings=[critical, *low_findings]),
+        skill_name="default",
+        skill_version="1",
+    )
+
+    assert len(adapter.summaries_posted) > 1
+    metadata = extract_metadata(
+        [
+            {"id": index, "body": body}
+            for index, body in enumerate(adapter.summaries_posted, start=1)
+        ]
+    )
+    assert metadata is not None
+    assert any(
+        finding.description.startswith("CRITICAL-CURRENT-")
+        for finding in metadata.unlocated_findings
+    )
+
+
+def test_review_note_metadata_prioritizes_visible_critical_when_only_one_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    critical = make_finding(severity="critical", description="CRITICAL-CURRENT")
+    low = make_finding(severity="low", description="LOW-CURRENT")
+    single_finding_budget = 2 + max(
+        review_context.metadata_finding_chars(critical),
+        review_context.metadata_finding_chars(low),
+    )
+    monkeypatch.setattr(
+        review_context,
+        "MAX_FINDING_HISTORY_CHARS",
+        single_finding_budget,
+    )
+
+    body = format_review_note(
+        make_change_request(),
+        skill_name="default",
+        skill_version="1",
+        unlocated_findings=[critical, low],
+    )
+
+    metadata = extract_metadata([{"id": 1, "body": body}])
+    assert metadata is not None
+    assert [finding.description for finding in metadata.unlocated_findings] == ["CRITICAL-CURRENT"]
 
 
 @pytest.mark.asyncio

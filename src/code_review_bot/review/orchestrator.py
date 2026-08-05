@@ -380,6 +380,7 @@ def _review_prompt_context_changed(original: ChangeRequest, latest: ChangeReques
             "target_branch",
             "state",
             "web_url",
+            "head_repo_url",
         )
     )
 

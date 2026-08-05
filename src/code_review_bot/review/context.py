@@ -74,24 +74,42 @@ def extract_metadata(
                 continue
             seen_finding_identities.add(identity)
             newest_findings.append(finding)
-    latest.unlocated_findings = limit_finding_history(list(reversed(newest_findings)))
+    latest.unlocated_findings = limit_finding_history(
+        list(reversed(newest_findings)),
+        prioritize_severity=True,
+    )
     return latest
 
 
-def limit_finding_history(findings: list[Finding]) -> list[Finding]:
-    """Keep compact forms of the newest findings within fixed metadata budgets."""
-    retained_reversed: list[Finding] = []
+def limit_finding_history(
+    findings: list[Finding],
+    *,
+    prioritize_severity: bool = False,
+) -> list[Finding]:
+    """Keep compact findings within fixed metadata budgets."""
+    indexed_findings = list(enumerate(findings))
+    if prioritize_severity:
+        indexed_findings.sort(
+            key=lambda item: (
+                ("critical", "high", "medium", "low").index(item[1].severity),
+                -item[0],
+            )
+        )
+    else:
+        indexed_findings.reverse()
+
+    retained_indexed: list[tuple[int, Finding]] = []
     used_chars = 2
-    for finding in reversed(findings):
+    for index, finding in indexed_findings:
         compacted = _compact_metadata_finding(finding)
         serialized = encode_metadata_json(serialize_metadata_finding(compacted))
-        additional_chars = len(serialized) + (1 if retained_reversed else 0)
+        additional_chars = len(serialized) + (1 if retained_indexed else 0)
         if used_chars + additional_chars > MAX_FINDING_HISTORY_CHARS:
             continue
-        retained_reversed.append(compacted)
+        retained_indexed.append((index, compacted))
         used_chars += additional_chars
 
-    retained = list(reversed(retained_reversed))
+    retained = [finding for _, finding in sorted(retained_indexed)]
     dropped = len(findings) - len(retained)
     if dropped:
         logger.warning(
