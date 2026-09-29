@@ -139,11 +139,13 @@ def _make_orchestrator(
     *,
     auto_approve: bool = True,
     platform_publish: bool = True,
+    expected_sha: str = "",
 ) -> ReviewOrchestrator:
     settings = Settings(
         git_repo_url="https://gitlab.test/group/project.git",
         git_repo_token="tok",
         auto_approve_on_clean_review=auto_approve,
+        code_review_expected_sha=expected_sha,
         _env_file=None,
     )
     publisher = (
@@ -447,7 +449,7 @@ async def test_review_restarts_once_when_inline_threads_change() -> None:
     initial_cr = _make_change_request(description="Initial requirements")
     latest_cr = _make_change_request(description="Updated requirements")
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[initial_cr, latest_cr, latest_cr]
+        side_effect=[initial_cr, latest_cr, latest_cr, latest_cr, latest_cr]
     )
     adapter.list_inline_threads = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
@@ -646,12 +648,78 @@ async def test_review_aborts_when_change_request_head_changes_during_review() ->
 
 
 @pytest.mark.asyncio
+async def test_review_aborts_when_configured_expected_sha_mismatches_initial_head() -> None:
+    adapter = ApprovalTrackingAdapter()
+    orchestrator = _make_orchestrator(adapter, expected_sha="unexpected-head")
+
+    with pytest.raises(RuntimeError, match="does not match CODE_REVIEW_EXPECTED_SHA"):
+        async with _stub_review_internals(orchestrator, SkillResult(summary="stale", findings=[])):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_head_changes_before_publication() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _make_change_request(),
+            _make_change_request(),
+            _make_change_request(
+                head_sha="new-head",
+                diff_refs={
+                    "base_sha": "new-base",
+                    "start_sha": "new-start",
+                    "head_sha": "new-head",
+                },
+            ),
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+
+    with pytest.raises(RuntimeError, match="head SHA changed during review"):
+        async with _stub_review_internals(orchestrator, SkillResult(summary="stale", findings=[])):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_not_awaited()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_review_aborts_when_head_changes_before_approval() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _make_change_request(),
+            _make_change_request(),
+            _make_change_request(),
+            _make_change_request(
+                head_sha="new-head",
+                diff_refs={
+                    "base_sha": "new-base",
+                    "start_sha": "new-start",
+                    "head_sha": "new-head",
+                },
+            ),
+        ]
+    )
+    orchestrator = _make_orchestrator(adapter)
+
+    with pytest.raises(RuntimeError, match="head SHA changed during review"):
+        async with _stub_review_internals(orchestrator, SkillResult(summary="clean", findings=[])):
+            await orchestrator.review_change_request("5")
+
+    orchestrator.publisher.publish.assert_awaited_once()  # type: ignore[union-attr]
+    assert adapter.approve_calls == []
+
+
+@pytest.mark.asyncio
 async def test_review_restarts_when_prompt_change_request_metadata_changes() -> None:
     adapter = ApprovalTrackingAdapter()
     initial_cr = _make_change_request(description="Initial requirements")
     latest_cr = _make_change_request(description="Updated requirements")
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[initial_cr, latest_cr, latest_cr]
+        side_effect=[initial_cr, latest_cr, latest_cr, latest_cr, latest_cr]
     )
     orchestrator = _make_orchestrator(adapter)
     stale = SkillResult(summary="stale", findings=[])
@@ -672,7 +740,7 @@ async def test_review_restarts_when_head_repository_changes() -> None:
     initial_cr = _make_change_request(head_repo_url="https://github.test/owner-a/repo.git")
     latest_cr = _make_change_request(head_repo_url="https://github.test/owner-b/repo.git")
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[initial_cr, latest_cr, latest_cr]
+        side_effect=[initial_cr, latest_cr, latest_cr, latest_cr, latest_cr]
     )
     orchestrator = _make_orchestrator(adapter)
 
@@ -694,7 +762,7 @@ async def test_review_updates_derived_branch_context_when_source_branch_changes(
     initial_cr = _make_change_request(source_branch="feature-old")
     latest_cr = _make_change_request(source_branch="feature-renamed")
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[initial_cr, latest_cr, latest_cr]
+        side_effect=[initial_cr, latest_cr, latest_cr, latest_cr, latest_cr]
     )
     orchestrator = _make_orchestrator(adapter)
 
@@ -746,7 +814,7 @@ async def test_review_uses_latest_change_request_state_for_approval(
 ) -> None:
     adapter = ApprovalTrackingAdapter()
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[_make_change_request(), latest_change_request]
+        side_effect=[_make_change_request(), latest_change_request, latest_change_request]
     )
     orchestrator = _make_orchestrator(adapter)
     result = SkillResult(summary="clean", findings=[])
@@ -764,7 +832,7 @@ async def test_review_restarts_when_change_request_state_changes() -> None:
     initial_cr = _make_change_request(state="opened")
     closed_cr = _make_change_request(state="closed")
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[initial_cr, closed_cr, closed_cr]
+        side_effect=[initial_cr, closed_cr, closed_cr, closed_cr]
     )
     orchestrator = _make_orchestrator(adapter)
 

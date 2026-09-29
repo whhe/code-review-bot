@@ -30,6 +30,7 @@ jobs:
       - name: Run code review
         env:
           AUTO_APPROVE_ON_CLEAN_REVIEW: "true"
+          CODE_REVIEW_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
           GIT_PLATFORM_TYPE: github
           GIT_REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
           GIT_REPO_TOKEN: ${{ secrets.CODE_REVIEW_GITHUB_TOKEN || github.token }}
@@ -62,6 +63,7 @@ jobs:
 
           docker run --rm \
             -e AUTO_APPROVE_ON_CLEAN_REVIEW \
+            -e CODE_REVIEW_EXPECTED_SHA \
             -e GIT_PLATFORM_TYPE \
             -e GIT_REPO_URL \
             -e GIT_REPO_TOKEN \

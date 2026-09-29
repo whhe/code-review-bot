@@ -282,3 +282,12 @@ def test_settings_auto_approve_reads_from_env(monkeypatch: pytest.MonkeyPatch) -
 
     settings = Settings(_env_file=None)
     assert settings.auto_approve_on_clean_review is True
+
+
+def test_settings_expected_sha_reads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODE_REVIEW_EXPECTED_SHA", "abc123")
+    from code_review_bot.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.code_review_expected_sha == "abc123"
