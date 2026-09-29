@@ -54,7 +54,10 @@ src/code_review_bot/
    change request, and creates a temporary workspace with the target branch checked out. The
    source and target commits remain available as `refs/code-review/source` and
    `refs/code-review/target`, pinned to the platform's diff SHAs when provided. Shallow clones are
-   automatically deepened when the two review refs do not expose a merge base.
+   automatically deepened when the two review refs do not expose a merge base. The orchestrator
+   captures the change-request head SHA at review start; when `CODE_REVIEW_EXPECTED_SHA` is
+   configured, it verifies that the configured value matches the current head and refuses to
+   review an unexpected revision.
 2. `load_skill(REVIEW_SKILL)` returns a skill object whose `build_prompt()` assembles the full
    agent prompt (system output contract + task context + skill reference + MR metadata).
 3. `CodingAgentReviewRunner` passes the prompt to the `CodingAgent` and parses the JSON
@@ -66,7 +69,9 @@ src/code_review_bot/
    orchestrator verifies that the change-request revision is unchanged, refreshes inline threads
    and summary-only finding history, then reruns once if either review-history source changed.
    A revision change or another history change aborts publication rather than posting stale
-   findings.
+   findings. The orchestrator also verifies that the current head SHA still matches the captured
+   or configured expected SHA before publishing comments; publication is aborted if the head has
+   changed during review.
 5. Findings are filtered by `FileFilter`, then `ReviewPublisher.publish()` posts inline diff
    comments and formats the summary. GitLab and GitHub without automatic approval post it as a
    note; GitHub with automatic approval defers it to the final review body. Hidden metadata retains
@@ -78,8 +83,10 @@ src/code_review_bot/
 6. When `AUTO_APPROVE_ON_CLEAN_REVIEW=true` (and not in `--debug` mode), the orchestrator
    approves the change request if no new findings were published, or revokes approval when new
    findings exist (GitLab: approve/unapprove API; GitHub: `APPROVE` / `REQUEST_CHANGES` review
-   containing the full summary). If the GitHub review cannot be submitted, the summary falls back
-   to an issue comment.
+   containing the full summary). Before updating approval, the orchestrator verifies that the
+   current head SHA still matches the expected SHA; approval is aborted if the head has changed.
+   If the GitHub review cannot be submitted, the summary falls back to an issue comment; the
+   orchestrator verifies the expected SHA before writing the fallback summary.
    When `AUTO_APPROVE_IGNORE_LOW_SEVERITY=true`, low-severity findings are excluded from this
    decision: a review with only low-severity findings is still treated as clean.
 
@@ -173,4 +180,6 @@ same-named Dependabot secrets for that write-capable token and `OPENCODE_UPSTREA
 workflow uses repository variables for `OPENCODE_UPSTREAM_ENDPOINT` and `OPENCODE_MODEL`.
 It enables clean-review approval with `AUTO_APPROVE_ON_CLEAN_REVIEW=true` and debug logging with
 `LOG_LEVEL=DEBUG`; the repository must allow GitHub Actions to create and approve pull requests for
-the built-in token to approve a clean review.
+the built-in token to approve a clean review. The workflow passes
+`CODE_REVIEW_EXPECTED_SHA=${{ github.event.pull_request.head.sha }}` to enable the SHA verification
+guard that prevents stale publication when the pull request head changes during review.
