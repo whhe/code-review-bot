@@ -323,6 +323,23 @@ async def test_maybe_update_approval_returns_none_on_api_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_maybe_update_approval_returns_none_when_refresh_fails() -> None:
+    adapter = ApprovalTrackingAdapter()
+    adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("network unavailable")
+    )
+    orchestrator = _make_orchestrator(adapter)
+
+    approved = await orchestrator._maybe_update_approval(
+        _make_change_request(), "1", new_findings_count=0
+    )
+
+    assert approved is None
+    assert adapter.approve_calls == []
+    assert adapter.revoke_calls == []
+
+
+@pytest.mark.asyncio
 async def test_maybe_update_approval_returns_none_on_revoke_failure() -> None:
     adapter = ApprovalTrackingAdapter()
 
@@ -686,7 +703,7 @@ async def test_review_aborts_when_head_changes_before_publication() -> None:
 
 
 @pytest.mark.asyncio
-async def test_review_aborts_when_head_changes_before_approval() -> None:
+async def test_review_skips_approval_when_head_changes_before_approval() -> None:
     adapter = ApprovalTrackingAdapter()
     adapter.fetch_change_request = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
@@ -705,11 +722,11 @@ async def test_review_aborts_when_head_changes_before_approval() -> None:
     )
     orchestrator = _make_orchestrator(adapter)
 
-    with pytest.raises(RuntimeError, match="head SHA changed during review"):
-        async with _stub_review_internals(orchestrator, SkillResult(summary="clean", findings=[])):
-            await orchestrator.review_change_request("5")
+    async with _stub_review_internals(orchestrator, SkillResult(summary="clean", findings=[])):
+        outcome = await orchestrator.review_change_request("5")
 
     orchestrator.publisher.publish.assert_awaited_once()  # type: ignore[union-attr]
+    assert outcome.approved is None
     assert adapter.approve_calls == []
 
 

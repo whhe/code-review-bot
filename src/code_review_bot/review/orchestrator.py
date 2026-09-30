@@ -342,13 +342,13 @@ class ReviewOrchestrator:
 
         head_sha = _review_head_sha(cr)
         baseline_sha = expected_sha or head_sha
-        if baseline_sha:
-            latest_cr = await self.adapter.fetch_change_request(project_ref, cr.cr_id)
-            _ensure_expected_review_sha(baseline_sha, latest_cr)
-            if not latest_cr.is_open or latest_cr.draft:
-                return None
-            head_sha = _review_head_sha(latest_cr)
         try:
+            if baseline_sha:
+                latest_cr = await self.adapter.fetch_change_request(project_ref, cr.cr_id)
+                _ensure_expected_review_sha(baseline_sha, latest_cr)
+                if not latest_cr.is_open or latest_cr.draft:
+                    return None
+                head_sha = _review_head_sha(latest_cr)
             if new_findings_count == 0:
                 if not head_sha:
                     logger.warning(
