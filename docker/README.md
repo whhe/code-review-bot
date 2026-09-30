@@ -138,8 +138,9 @@ exists it is left untouched.
 | `ANTHROPIC_BASE_URL` | first start (optional) | — | Anthropic API base URL (proxy / custom endpoint) |
 | `ANTHROPIC_MODEL` | first start (optional) | `claude-opus-4-6` | Written into Claude Code `settings.json` |
 
-All other bot settings (`GIT_REPO_URL`, `GIT_REPO_TOKEN`, `REVIEW_SKILL`, etc.) are read from the
-same env file — see the [configuration reference](../README.md#configuration) in the root README.
+All other bot settings (`GIT_REPO_URL`, `GIT_REPO_TOKEN`, `REVIEW_SKILL`,
+`CODE_REVIEW_EXPECTED_SHA`, etc.) are read from the same env file — see the
+[configuration reference](../README.md#configuration) in the root README.
 
 ## CI integration
 
@@ -161,6 +162,7 @@ code-review:
     GIT_PLATFORM_TYPE: gitlab
     GIT_REPO_URL: "${CI_PROJECT_URL}.git"
     GIT_REPO_TOKEN: $GITLAB_TOKEN
+    CODE_REVIEW_EXPECTED_SHA: $CI_MERGE_REQUEST_SOURCE_BRANCH_SHA
     ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
   script:
     - code-review-bot --cr-id "${CI_MERGE_REQUEST_IID}"

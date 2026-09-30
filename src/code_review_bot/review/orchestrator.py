@@ -86,6 +86,10 @@ class ReviewOrchestrator:
         try:
             logger.info("Start review project_ref=%s cr_id=%s", resolved_ref, cr_id)
             cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
+            review_expected_sha = _resolve_expected_review_sha(
+                cr,
+                self.settings.code_review_expected_sha,
+            )
             notes = await self.adapter.list_notes(resolved_ref, cr_id)
             inline_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
 
@@ -149,6 +153,7 @@ class ReviewOrchestrator:
                 latest_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
                 latest_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
                 _ensure_unchanged_review_revision(cr, latest_cr)
+                _ensure_expected_review_sha(review_expected_sha, latest_cr)
                 prompt_context_changed = _review_prompt_context_changed(cr, latest_cr)
                 cr = latest_cr
                 latest_metadata = extract_metadata(
@@ -190,6 +195,7 @@ class ReviewOrchestrator:
                     final_threads = await self.adapter.list_inline_threads(resolved_ref, cr_id)
                     final_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
                     _ensure_unchanged_review_revision(cr, final_cr)
+                    _ensure_expected_review_sha(review_expected_sha, final_cr)
                     prompt_context_changed = _review_prompt_context_changed(cr, final_cr)
                     cr = final_cr
                     final_metadata = extract_metadata(
@@ -233,6 +239,8 @@ class ReviewOrchestrator:
                 and not cr.draft
             )
             if self._platform_publish:
+                latest_publish_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
+                _ensure_expected_review_sha(review_expected_sha, latest_publish_cr)
                 platform_publisher = cast(PlatformPublisher, self.publisher)
                 publish_result = result
                 approval_count = self._approval_finding_count(publish_result.findings)
@@ -247,7 +255,19 @@ class ReviewOrchestrator:
                     )
                 except Exception:
                     if approval_count:
-                        await self._maybe_update_approval(cr, resolved_ref, approval_count)
+                        try:
+                            await self._maybe_update_approval(
+                                cr,
+                                resolved_ref,
+                                approval_count,
+                                expected_sha=review_expected_sha,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to update approval after review publication failure; "
+                                "preserving the original publication error",
+                                exc_info=True,
+                            )
                     raise
             else:
                 publish_result = result
@@ -264,8 +284,11 @@ class ReviewOrchestrator:
                 resolved_ref,
                 approval_count,
                 review_body=outcome.review_body if consolidate_github_review else "",
+                expected_sha=review_expected_sha,
             )
             if consolidate_github_review and approved is None:
+                latest_summary_cr = await self.adapter.fetch_change_request(resolved_ref, cr_id)
+                _ensure_expected_review_sha(review_expected_sha, latest_summary_cr)
                 await self.adapter.publish_summary(resolved_ref, cr.cr_id, outcome.review_body)
             outcome = outcome.model_copy(update={"approved": approved})
             logger.info(
@@ -308,6 +331,7 @@ class ReviewOrchestrator:
         project_ref: str,
         new_findings_count: int,
         review_body: str = "",
+        expected_sha: str = "",
     ) -> bool | None:
         if not self.settings.auto_approve_on_clean_review:
             return None
@@ -316,8 +340,15 @@ class ReviewOrchestrator:
         if not cr.is_open or cr.draft:
             return None
 
-        head_sha = cr.diff_refs.get("head_sha", cr.head_sha)
+        head_sha = _review_head_sha(cr)
+        baseline_sha = expected_sha or head_sha
         try:
+            if baseline_sha:
+                latest_cr = await self.adapter.fetch_change_request(project_ref, cr.cr_id)
+                _ensure_expected_review_sha(baseline_sha, latest_cr)
+                if not latest_cr.is_open or latest_cr.draft:
+                    return None
+                head_sha = _review_head_sha(latest_cr)
             if new_findings_count == 0:
                 if not head_sha:
                     logger.warning(
@@ -366,6 +397,32 @@ def _ensure_unchanged_review_revision(original: ChangeRequest, latest: ChangeReq
     if original.head_sha != latest.head_sha or original.diff_refs != latest.diff_refs:
         raise RuntimeError(
             "Change request revision changed during review; refusing to publish stale findings"
+        )
+
+
+def _review_head_sha(cr: ChangeRequest) -> str:
+    return cr.diff_refs.get("head_sha") or cr.head_sha
+
+
+def _resolve_expected_review_sha(cr: ChangeRequest, configured_sha: str) -> str:
+    current_sha = _review_head_sha(cr)
+    configured_sha = configured_sha.strip()
+    if configured_sha and configured_sha != current_sha:
+        raise RuntimeError(
+            "Change request head SHA does not match CODE_REVIEW_EXPECTED_SHA; "
+            "refusing to review an unexpected revision"
+        )
+    return configured_sha or current_sha
+
+
+def _ensure_expected_review_sha(expected_sha: str, latest: ChangeRequest) -> None:
+    if not expected_sha:
+        return
+    current_sha = _review_head_sha(latest)
+    if current_sha != expected_sha:
+        raise RuntimeError(
+            "Change request head SHA changed during review; refusing to publish or approve "
+            "stale findings"
         )
 
 

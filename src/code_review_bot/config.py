@@ -121,6 +121,14 @@ class Settings(BaseSettings):
             "Has no effect when AUTO_APPROVE_ON_CLEAN_REVIEW is false."
         ),
     )
+    code_review_expected_sha: str = Field(
+        default="",
+        description=(
+            "Optional expected change-request head SHA. When set, the review refuses to "
+            "publish comments or update approval if the platform reports a different SHA. "
+            "When empty, the SHA loaded at review start is used."
+        ),
+    )
     clone_base_dir: str | None = None
     clone_depth: int = 0
 

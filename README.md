@@ -113,6 +113,7 @@ See `.env.example` for the full list with descriptions.
 | `OUTPUT_LANGUAGE` | no | `english` | Language for findings and the change-request summary (`english` or `chinese`). Code, configs, and identifiers stay in English. |
 | `AUTO_APPROVE_ON_CLEAN_REVIEW` | no | `false` | When `true`, approve the MR/PR after publish when no new findings were posted; revoke approval when new findings exist. On GitHub, the full summary is published as that review's body instead of a separate issue comment. Requires token approval permissions. Skipped in `--debug` mode. |
 | `AUTO_APPROVE_IGNORE_LOW_SEVERITY` | no | `false` | When `true`, low-severity findings are excluded from the approval decision: a review with only low-severity findings is treated as clean and approved. Has no effect when `AUTO_APPROVE_ON_CLEAN_REVIEW` is `false`. |
+| `CODE_REVIEW_EXPECTED_SHA` | no | review-start head SHA | Optional commit SHA captured by CI when the review starts. The bot refuses to publish comments or change approval if the current MR/PR head differs from this SHA. |
 
 ### Coding agent (ACP)
 
