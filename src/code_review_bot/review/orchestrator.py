@@ -255,12 +255,19 @@ class ReviewOrchestrator:
                     )
                 except Exception:
                     if approval_count:
-                        await self._maybe_update_approval(
-                            cr,
-                            resolved_ref,
-                            approval_count,
-                            expected_sha=review_expected_sha,
-                        )
+                        try:
+                            await self._maybe_update_approval(
+                                cr,
+                                resolved_ref,
+                                approval_count,
+                                expected_sha=review_expected_sha,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to update approval after review publication failure; "
+                                "preserving the original publication error",
+                                exc_info=True,
+                            )
                     raise
             else:
                 publish_result = result
@@ -333,13 +340,14 @@ class ReviewOrchestrator:
         if not cr.is_open or cr.draft:
             return None
 
-        baseline_sha = expected_sha or _review_head_sha(cr)
-        latest_cr = await self.adapter.fetch_change_request(project_ref, cr.cr_id)
-        _ensure_expected_review_sha(baseline_sha, latest_cr)
-        if not latest_cr.is_open or latest_cr.draft:
-            return None
-
-        head_sha = _review_head_sha(latest_cr) if baseline_sha else _review_head_sha(cr)
+        head_sha = _review_head_sha(cr)
+        baseline_sha = expected_sha or head_sha
+        if baseline_sha:
+            latest_cr = await self.adapter.fetch_change_request(project_ref, cr.cr_id)
+            _ensure_expected_review_sha(baseline_sha, latest_cr)
+            if not latest_cr.is_open or latest_cr.draft:
+                return None
+            head_sha = _review_head_sha(latest_cr)
         try:
             if new_findings_count == 0:
                 if not head_sha:

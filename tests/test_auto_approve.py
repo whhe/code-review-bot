@@ -978,6 +978,31 @@ async def test_review_revokes_approval_when_supplemental_summary_publication_fai
 
 
 @pytest.mark.asyncio
+async def test_review_preserves_publication_error_when_approval_recovery_fails() -> None:
+    adapter = FailingSummaryApprovalAdapter(fail_on_call=2)
+    orchestrator = _make_orchestrator(adapter)
+    orchestrator._maybe_update_approval = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("approval refresh failed")
+    )
+    findings = [
+        _make_finding("critical").model_copy(
+            update={"description": f"issue-{index}", "line_range": "outside diff"}
+        )
+        for index in range(41)
+    ]
+
+    with pytest.raises(RuntimeError, match="summary comment rejected"):
+        async with _stub_review_internals(
+            orchestrator,
+            SkillResult(summary="issues", findings=findings),
+            stub_publisher=False,
+        ):
+            await orchestrator.review_change_request("5")
+
+    orchestrator._maybe_update_approval.assert_awaited_once()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
 async def test_github_auto_approval_publishes_summary_as_single_review() -> None:
     adapter = ReviewBodyApprovalTrackingAdapter()
     adapter.platform_name = "github"
