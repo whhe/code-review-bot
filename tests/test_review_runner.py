@@ -74,6 +74,27 @@ async def test_coding_agent_review_runner_uses_plan_agent_and_parses_json() -> N
 
 
 @pytest.mark.asyncio
+async def test_coding_agent_review_runner_uses_retryable_agent_run() -> None:
+    calls: list[str] = []
+
+    class RetryableAgent:
+        async def run(self, prompt: str, **kwargs: object) -> AgentRunResult:
+            calls.append("run")
+            return AgentRunResult(text='{"summary":"ok","findings":[]}', parts=[], usage={})
+
+        async def run_once(self, prompt: str, **kwargs: object) -> AgentRunResult:
+            calls.append("run_once")
+            raise AssertionError("runner should prefer the retryable entry point")
+
+    result = await CodingAgentReviewRunner(RetryableAgent()).review(
+        FakeSkill(), make_task_context()
+    )
+
+    assert result.summary == "ok"
+    assert calls == ["run"]
+
+
+@pytest.mark.asyncio
 async def test_coding_agent_review_runner_retries_on_bad_json() -> None:
     call_count = 0
 
