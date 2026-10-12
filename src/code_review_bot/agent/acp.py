@@ -209,6 +209,7 @@ class AcpCodingAgent:
                     system=system,
                     files=files,
                     additional_directories=additional_directories,
+                    log_errors=attempt >= self.config.max_retries,
                 )
             except (TimeoutError, ConnectionError, EOFError) as error:
                 if attempt >= self.config.max_retries:
@@ -234,6 +235,7 @@ class AcpCodingAgent:
         system: str | None = None,
         files: list[str] | None = None,
         additional_directories: list[str] | None = None,
+        log_errors: bool = True,
     ) -> AgentRunResult:
         from acp import PROTOCOL_VERSION, Client, spawn_agent_process, text_block
         from acp.schema import ClientCapabilities, Implementation
@@ -361,6 +363,16 @@ class AcpCodingAgent:
                     )
                     if response.usage is not None:
                         usage_dict = _usage_to_dict(response.usage)
+            except (TimeoutError, ConnectionError, EOFError):
+                if log_errors:
+                    _log_acp_error(
+                        _proc,
+                        cwd=cwd,
+                        model=config.model,
+                        command=config.command,
+                        args=config.args,
+                    )
+                raise
             except Exception:
                 _log_acp_error(
                     _proc,

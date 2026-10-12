@@ -1,7 +1,7 @@
 from typing import Protocol
 
 from code_review_bot.agent.json_extract import complete_json_with_retries
-from code_review_bot.agent.protocol import CodingAgent
+from code_review_bot.agent.protocol import CodingAgent, RetryableCodingAgent
 from code_review_bot.review.models import ReviewTaskContext
 from code_review_bot.skill.protocol import RuntimeMetadata, SkillResult
 
@@ -52,12 +52,14 @@ class CodingAgentReviewRunner:
                     token_valid_counts[key] += 1
 
         async def run(current_prompt: str) -> str:
-            run_agent = getattr(self.agent, "run", self.agent.run_once)
-            result = await run_agent(
-                current_prompt,
-                agent="plan",
-                additional_directories=getattr(skill, "additional_directories", []),
-            )
+            run_kwargs = {
+                "agent": "plan",
+                "additional_directories": getattr(skill, "additional_directories", []),
+            }
+            if isinstance(self.agent, RetryableCodingAgent):
+                result = await self.agent.run(current_prompt, **run_kwargs)
+            else:
+                result = await self.agent.run_once(current_prompt, **run_kwargs)
             collect_runtime_metadata(result)
             return result.text
 
