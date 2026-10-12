@@ -154,7 +154,7 @@ async def test_acp_runtime_restarts_agent_after_request_timeout(
         tmp_path,
     )
 
-    await agent.run_once("review")
+    await agent.run("review")
 
     assert spawn_count == 2
 

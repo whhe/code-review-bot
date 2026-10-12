@@ -52,7 +52,8 @@ class CodingAgentReviewRunner:
                     token_valid_counts[key] += 1
 
         async def run(current_prompt: str) -> str:
-            result = await self.agent.run_once(
+            run_agent = getattr(self.agent, "run", self.agent.run_once)
+            result = await run_agent(
                 current_prompt,
                 agent="plan",
                 additional_directories=getattr(skill, "additional_directories", []),

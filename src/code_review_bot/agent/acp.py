@@ -182,6 +182,24 @@ class AcpCodingAgent:
         files: list[str] | None = None,
         additional_directories: list[str] | None = None,
     ) -> AgentRunResult:
+        """Run one ACP agent attempt without retrying transient failures."""
+        return await self._run_once(
+            prompt,
+            agent=agent,
+            system=system,
+            files=files,
+            additional_directories=additional_directories,
+        )
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        agent: str = "plan",
+        system: str | None = None,
+        files: list[str] | None = None,
+        additional_directories: list[str] | None = None,
+    ) -> AgentRunResult:
         """Run the ACP agent, restarting it after transient request failures."""
         for attempt in range(self.config.max_retries + 1):
             try:
