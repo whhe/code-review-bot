@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -214,7 +215,7 @@ class AcpCodingAgent:
             except (TimeoutError, ConnectionError, EOFError) as error:
                 if attempt >= self.config.max_retries:
                     raise
-                delay = _RETRY_BACKOFF_SECONDS * (2**attempt)
+                delay = _RETRY_BACKOFF_SECONDS * (2**attempt) * random.uniform(0.5, 1.5)
                 logger.warning(
                     "ACP agent request failed; restarting agent "
                     "attempt=%d/%d error=%s retry_in=%.1fs",
