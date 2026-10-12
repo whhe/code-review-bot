@@ -32,5 +32,7 @@ def build_coding_agent(
         model_config_option="model" if settings.acp_agent_type == "codex" else None,
         stream_limit=settings.acp_stream_limit,
         verbose=settings.acp_verbose,
+        request_timeout=settings.acp_request_timeout,
+        max_retries=settings.acp_max_retries,
     )
     return AcpCodingAgent(config, cwd)
