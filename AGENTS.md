@@ -62,6 +62,10 @@ src/code_review_bot/
    agent prompt (system output contract + task context + skill reference + MR metadata).
 3. `CodingAgentReviewRunner` passes the prompt to the `CodingAgent` and parses the JSON
    `SkillResult` from the response (with `json-repair` as fallback for malformed output).
+   `ACP_REQUEST_TIMEOUT` bounds initialization and session setup only. `ACP_IDLE_TIMEOUT`
+   disconnects after continuous silence on ACP stdout; incoming messages reset the interval.
+   Transient failures restart the agent and resend the prompt up to `ACP_MAX_RETRIES` times.
+   Configure the overall review deadline through the CI job timeout.
 4. All inline comment threads (resolved and open) and prior findings that could only be published
    in a summary are included in the prompt; summary history is accepted only from the configured
    or auto-discovered authenticated platform user. The agent must omit the same defect instance

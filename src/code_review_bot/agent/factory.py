@@ -33,6 +33,7 @@ def build_coding_agent(
         stream_limit=settings.acp_stream_limit,
         verbose=settings.acp_verbose,
         request_timeout=settings.acp_request_timeout,
+        idle_timeout=settings.acp_idle_timeout,
         max_retries=settings.acp_max_retries,
     )
     return AcpCodingAgent(config, cwd)
