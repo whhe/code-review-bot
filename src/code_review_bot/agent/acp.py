@@ -50,6 +50,7 @@ class AcpAgentConfig:
     stream_limit: int | None = None
     verbose: bool = True
     request_timeout: float = 60.0
+    idle_timeout: float = 600.0
     max_retries: int = 2
 
 
@@ -294,6 +295,7 @@ class AcpCodingAgent:
             *config.args,
             env=env,
             cwd=cwd,
+            receive_timeout=config.idle_timeout,
             transport_kwargs=(
                 {"limit": config.stream_limit} if config.stream_limit is not None else None
             ),

@@ -80,6 +80,15 @@ class Settings(BaseSettings):
             "The long-running review prompt is bounded by the CI job timeout."
         ),
     )
+    acp_idle_timeout: float = Field(
+        default=600.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds without incoming ACP messages before disconnecting and retrying. "
+            "Incoming messages reset this interval; it does not limit total review time."
+        ),
+    )
     acp_max_retries: int = Field(
         default=2,
         ge=0,
