@@ -1,8 +1,10 @@
 """ACP subprocess coding agent: launches an external process and streams its output."""
 
+import asyncio
 import json
 import logging
 import os
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ from code_review_bot.agent.protocol import AgentRunResult
 logger = logging.getLogger(__name__)
 
 _MESSAGE_PREVIEW_CHARS = 200
+_RETRY_BACKOFF_SECONDS = 1.0
 
 
 class _LogLineBuffer:
@@ -46,6 +49,8 @@ class AcpAgentConfig:
     model_config_option: str | None = None
     stream_limit: int | None = None
     verbose: bool = True
+    request_timeout: float = 60.0
+    max_retries: int = 2
 
 
 def handle_session_update(
@@ -178,6 +183,61 @@ class AcpCodingAgent:
         files: list[str] | None = None,
         additional_directories: list[str] | None = None,
     ) -> AgentRunResult:
+        """Run one ACP agent attempt without retrying transient failures."""
+        return await self._run_once(
+            prompt,
+            agent=agent,
+            system=system,
+            files=files,
+            additional_directories=additional_directories,
+        )
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        agent: str = "plan",
+        system: str | None = None,
+        files: list[str] | None = None,
+        additional_directories: list[str] | None = None,
+    ) -> AgentRunResult:
+        """Run the ACP agent, restarting it after transient request failures."""
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                return await self._run_once(
+                    prompt,
+                    agent=agent,
+                    system=system,
+                    files=files,
+                    additional_directories=additional_directories,
+                    log_errors=attempt >= self.config.max_retries,
+                )
+            except (TimeoutError, ConnectionError, EOFError) as error:
+                if attempt >= self.config.max_retries:
+                    raise
+                delay = _RETRY_BACKOFF_SECONDS * (2**attempt) * random.uniform(0.5, 1.5)
+                logger.warning(
+                    "ACP agent request failed; restarting agent "
+                    "attempt=%d/%d error=%s retry_in=%.1fs",
+                    attempt + 1,
+                    self.config.max_retries + 1,
+                    error,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+        raise AssertionError("ACP retry loop completed without returning or raising")
+
+    async def _run_once(
+        self,
+        prompt: str,
+        *,
+        agent: str = "plan",
+        system: str | None = None,
+        files: list[str] | None = None,
+        additional_directories: list[str] | None = None,
+        log_errors: bool = True,
+    ) -> AgentRunResult:
         from acp import PROTOCOL_VERSION, Client, spawn_agent_process, text_block
         from acp.schema import ClientCapabilities, Implementation
 
@@ -239,14 +299,17 @@ class AcpCodingAgent:
             ),
         ) as (conn, _proc):
             try:
-                initialize_response = await conn.initialize(
-                    protocol_version=PROTOCOL_VERSION,
-                    client_capabilities=ClientCapabilities(),
-                    client_info=Implementation(
-                        name="code-review-bot",
-                        title="code-review-bot",
-                        version="0.1.0",
+                initialize_response = await asyncio.wait_for(
+                    conn.initialize(
+                        protocol_version=PROTOCOL_VERSION,
+                        client_capabilities=ClientCapabilities(),
+                        client_info=Implementation(
+                            name="code-review-bot",
+                            title="code-review-bot",
+                            version="0.1.0",
+                        ),
                     ),
+                    timeout=config.request_timeout,
                 )
                 agent_info = getattr(initialize_response, "agent_info", None)
                 protocol_version = getattr(initialize_response, "protocol_version", None)
@@ -260,14 +323,23 @@ class AcpCodingAgent:
                 session_kwargs: dict[str, Any] = {"cwd": cwd}
                 if additional_directories:
                     session_kwargs["additional_directories"] = additional_directories
-                session = await conn.new_session(**session_kwargs)
+                session = await asyncio.wait_for(
+                    conn.new_session(**session_kwargs),
+                    timeout=config.request_timeout,
+                )
                 if config.model and config.model_via_acp:
-                    await conn.set_session_model(config.model, session.session_id)
+                    await asyncio.wait_for(
+                        conn.set_session_model(config.model, session.session_id),
+                        timeout=config.request_timeout,
+                    )
                 elif config.model and config.model_config_option is not None:
-                    await conn.set_config_option(
-                        config.model_config_option,
-                        session.session_id,
-                        config.model,
+                    await asyncio.wait_for(
+                        conn.set_config_option(
+                            config.model_config_option,
+                            session.session_id,
+                            config.model,
+                        ),
+                        timeout=config.request_timeout,
                     )
                 combined_prompt = _combine_prompt(prompt, system, files)
                 _log_acp_prompt(
@@ -278,9 +350,12 @@ class AcpCodingAgent:
                     cwd=cwd,
                     additional_directories=additional_directories or [],
                 )
-                response = await conn.prompt(
-                    session_id=session.session_id,
-                    prompt=[text_block(combined_prompt)],
+                response = await asyncio.wait_for(
+                    conn.prompt(
+                        session_id=session.session_id,
+                        prompt=[text_block(combined_prompt)],
+                    ),
+                    timeout=config.request_timeout,
                 )
                 if response is not None:
                     raw_model = getattr(response, "model", None)
@@ -289,6 +364,16 @@ class AcpCodingAgent:
                     )
                     if response.usage is not None:
                         usage_dict = _usage_to_dict(response.usage)
+            except (TimeoutError, ConnectionError, EOFError):
+                if log_errors:
+                    _log_acp_error(
+                        _proc,
+                        cwd=cwd,
+                        model=config.model,
+                        command=config.command,
+                        args=config.args,
+                    )
+                raise
             except Exception:
                 _log_acp_error(
                     _proc,

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -117,6 +118,86 @@ async def test_acp_runtime_returns_runtime_model_from_agent_response(
     run = await agent.run_once("review")
 
     assert run.model == "provider/runtime-model"
+
+
+@pytest.mark.asyncio
+async def test_acp_runtime_restarts_agent_after_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connections = [_Connection(), _Connection()]
+    spawn_count = 0
+
+    async def timed_out_prompt(**kwargs: object) -> SimpleNamespace:
+        await asyncio.sleep(1)
+        return SimpleNamespace(usage=None)
+
+    connections[0].prompt = timed_out_prompt  # type: ignore[method-assign]
+
+    @asynccontextmanager
+    async def fake_spawn_agent_process(
+        client: object,
+        command: str,
+        *args: str,
+        env: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> AsyncIterator[tuple[_Connection, SimpleNamespace]]:
+        nonlocal spawn_count
+        connection = connections[spawn_count]
+        spawn_count += 1
+        yield connection, SimpleNamespace(stdin=None, stdout=None, stderr=None, _transport=None)
+
+    monkeypatch.setattr(acp_sdk, "spawn_agent_process", fake_spawn_agent_process)
+    monkeypatch.setattr("code_review_bot.agent.acp._RETRY_BACKOFF_SECONDS", 0)
+    agent = AcpCodingAgent(
+        AcpAgentConfig(command="agent", request_timeout=0.01, max_retries=1, verbose=False),
+        tmp_path,
+    )
+
+    await agent.run("review")
+
+    assert spawn_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [TimeoutError("timeout"), ConnectionError("closed"), EOFError()]
+)
+async def test_acp_runtime_propagates_transient_failure_after_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: Exception,
+) -> None:
+    spawn_count = 0
+
+    async def failing_prompt(**kwargs: object) -> SimpleNamespace:
+        raise failure
+
+    @asynccontextmanager
+    async def fake_spawn_agent_process(
+        client: object,
+        command: str,
+        *args: str,
+        env: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> AsyncIterator[tuple[_Connection, SimpleNamespace]]:
+        nonlocal spawn_count
+        spawn_count += 1
+        connection = _Connection()
+        connection.prompt = failing_prompt  # type: ignore[method-assign]
+        yield connection, SimpleNamespace(stdin=None, stdout=None, stderr=None, _transport=None)
+
+    monkeypatch.setattr(acp_sdk, "spawn_agent_process", fake_spawn_agent_process)
+    monkeypatch.setattr("code_review_bot.agent.acp._RETRY_BACKOFF_SECONDS", 0)
+    agent = AcpCodingAgent(
+        AcpAgentConfig(command="agent", request_timeout=0.01, max_retries=1, verbose=False),
+        tmp_path,
+    )
+
+    with pytest.raises(type(failure)):
+        await agent.run("review")
+
+    assert spawn_count == 2
 
 
 @pytest.mark.asyncio

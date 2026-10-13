@@ -71,6 +71,18 @@ class Settings(BaseSettings):
             "Log ACP input prompts, tool calls, and agent message chunks during review runs."
         ),
     )
+    acp_request_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Timeout in seconds for each ACP request before restarting the agent.",
+    )
+    acp_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="Maximum number of agent restarts after transient ACP failures (0-10).",
+    )
 
     log_level: str = "INFO"
     log_dir: str = Field(

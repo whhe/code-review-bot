@@ -114,6 +114,33 @@ def test_settings_acp_agent_type_defaults_to_claude(monkeypatch: pytest.MonkeyPa
     assert settings.acp_agent_type == "claude"
     assert settings.resolved_acp_command == "npx"
     assert settings.resolved_acp_args == ["-y", "@agentclientprotocol/claude-agent-acp"]
+    assert settings.acp_request_timeout == 60.0
+    assert settings.acp_max_retries == 2
+
+
+def test_settings_acp_retry_configuration_reads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACP_REQUEST_TIMEOUT", "15")
+    monkeypatch.setenv("ACP_MAX_RETRIES", "4")
+    from code_review_bot.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.acp_request_timeout == 15.0
+    assert settings.acp_max_retries == 4
+
+
+def test_settings_acp_retry_configuration_rejects_excessive_retries() -> None:
+    from pydantic import ValidationError
+
+    from code_review_bot.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(
+            git_repo_url="https://gitlab.test/group/project.git",
+            git_repo_token="tok",
+            acp_max_retries=11,
+            _env_file=None,
+        )
 
 
 def test_settings_acp_agent_type_codex_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
