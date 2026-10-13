@@ -125,7 +125,7 @@ See `.env.example` for the full list with descriptions.
 | `ACP_MODEL` | no | agent default | Model override. Claude receives it through `ANTHROPIC_MODEL`; Codex uses the ACP `model` config option; OpenCode receives the full `provider/model` ID through ACP session model selection. |
 | `ACP_VERBOSE` | no | `true` | Log ACP input prompts, tool calls, and streamed agent messages |
 | `ACP_STREAM_LIMIT` | no | `10485760` (10 MB) | Max bytes for one ACP newline-delimited JSON frame |
-| `ACP_REQUEST_TIMEOUT` | no | `60` | Seconds before an ACP request is cancelled and the agent is restarted |
+| `ACP_REQUEST_TIMEOUT` | no | `60` | Seconds without ACP session activity before the agent is restarted; tool calls and streamed updates reset the timer |
 | `ACP_MAX_RETRIES` | no | `2` | Agent restarts after transient ACP failures (timeout, disconnect, or broken pipe), from 0 to 10 |
 
 Review comments display `ACP_MODEL` when set. Otherwise, they fall back to `ANTHROPIC_MODEL` for
