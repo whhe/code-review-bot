@@ -121,18 +121,13 @@ async def test_acp_runtime_returns_runtime_model_from_agent_response(
 
 
 @pytest.mark.asyncio
-async def test_acp_runtime_restarts_agent_after_idle_timeout(
+async def test_acp_runtime_does_not_timeout_long_review_prompt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    connections = [_Connection(), _Connection()]
-    spawn_count = 0
-
-    async def timed_out_prompt(**kwargs: object) -> SimpleNamespace:
-        await asyncio.sleep(1)
+    async def long_prompt(**kwargs: object) -> SimpleNamespace:
+        await asyncio.sleep(0.05)
         return SimpleNamespace(usage=None)
-
-    connections[0].prompt = timed_out_prompt  # type: ignore[method-assign]
 
     @asynccontextmanager
     async def fake_spawn_agent_process(
@@ -140,6 +135,45 @@ async def test_acp_runtime_restarts_agent_after_idle_timeout(
         command: str,
         *args: str,
         env: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> AsyncIterator[tuple[_Connection, SimpleNamespace]]:
+        connection = _Connection()
+        connection.prompt = long_prompt  # type: ignore[method-assign]
+        yield connection, SimpleNamespace(stdin=None, stdout=None, stderr=None, _transport=None)
+
+    monkeypatch.setattr(acp_sdk, "spawn_agent_process", fake_spawn_agent_process)
+    agent = AcpCodingAgent(
+        AcpAgentConfig(command="agent", request_timeout=0.01, max_retries=0, verbose=False),
+        tmp_path,
+    )
+
+    await agent.run("review")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["initialize", "new_session"])
+async def test_acp_runtime_retries_timed_out_session_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    method: str,
+) -> None:
+    connections = [_Connection(), _Connection()]
+    spawn_count = 0
+    setup_cancelled = asyncio.Event()
+
+    async def stalled_setup(**kwargs: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            setup_cancelled.set()
+
+    setattr(connections[0], method, stalled_setup)
+
+    @asynccontextmanager
+    async def fake_spawn_agent_process(
+        client: object,
+        command: str,
+        *args: str,
         **kwargs: object,
     ) -> AsyncIterator[tuple[_Connection, SimpleNamespace]]:
         nonlocal spawn_count
@@ -156,43 +190,8 @@ async def test_acp_runtime_restarts_agent_after_idle_timeout(
 
     await agent.run("review")
 
+    assert setup_cancelled.is_set()
     assert spawn_count == 2
-
-
-@pytest.mark.asyncio
-async def test_acp_runtime_extends_prompt_timeout_when_session_is_active(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    client_ref: object | None = None
-
-    async def active_prompt(**kwargs: object) -> SimpleNamespace:
-        assert client_ref is not None
-        await getattr(client_ref, "session_update")("session-1", object())
-        await asyncio.sleep(0.02)
-        return SimpleNamespace(usage=None)
-
-    @asynccontextmanager
-    async def fake_spawn_agent_process(
-        client: object,
-        command: str,
-        *args: str,
-        env: dict[str, str] | None = None,
-        **kwargs: object,
-    ) -> AsyncIterator[tuple[_Connection, SimpleNamespace]]:
-        nonlocal client_ref
-        client_ref = client
-        connection = _Connection()
-        connection.prompt = active_prompt  # type: ignore[method-assign]
-        yield connection, SimpleNamespace(stdin=None, stdout=None, stderr=None, _transport=None)
-
-    monkeypatch.setattr(acp_sdk, "spawn_agent_process", fake_spawn_agent_process)
-    agent = AcpCodingAgent(
-        AcpAgentConfig(command="agent", request_timeout=0.05, max_retries=0, verbose=False),
-        tmp_path,
-    )
-
-    await agent.run("review")
 
 
 @pytest.mark.asyncio

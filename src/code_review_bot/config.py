@@ -76,8 +76,8 @@ class Settings(BaseSettings):
         gt=0,
         allow_inf_nan=False,
         description=(
-            "Idle timeout in seconds for an ACP request before restarting the agent. "
-            "Session activity resets this timer."
+            "Timeout in seconds for ACP initialization and session setup requests. "
+            "The long-running review prompt is bounded by the CI job timeout."
         ),
     )
     acp_max_retries: int = Field(
