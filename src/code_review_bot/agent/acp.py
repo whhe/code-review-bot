@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,30 @@ logger = logging.getLogger(__name__)
 
 _MESSAGE_PREVIEW_CHARS = 200
 _RETRY_BACKOFF_SECONDS = 1.0
+
+
+async def _await_with_idle_timeout(
+    awaitable: Awaitable[Any],
+    *,
+    timeout: float,
+    last_activity: Callable[[], float],
+) -> Any:
+    """Await an ACP request until it finishes or session activity goes idle."""
+    task = asyncio.create_task(awaitable)
+    try:
+        while True:
+            remaining = timeout - (asyncio.get_running_loop().time() - last_activity())
+            if remaining <= 0:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise TimeoutError(f"ACP request idle timeout after {timeout:g}s")
+            done, _ = await asyncio.wait({task}, timeout=remaining)
+            if done:
+                return await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 class _LogLineBuffer:
@@ -242,6 +267,7 @@ class AcpCodingAgent:
         from acp.schema import ClientCapabilities, Implementation
 
         config = self.config
+        last_activity = asyncio.get_running_loop().time()
 
         class CollectingClient(Client):
             def __init__(self) -> None:
@@ -260,6 +286,8 @@ class AcpCodingAgent:
             async def session_update(
                 self, session_id: str, update: object, **kwargs: object
             ) -> None:
+                nonlocal last_activity
+                last_activity = asyncio.get_running_loop().time()
                 message_text = handle_session_update(
                     update,
                     verbose=config.verbose,
@@ -276,6 +304,8 @@ class AcpCodingAgent:
                 tool_call: object,
                 **kwargs: object,
             ) -> object:
+                nonlocal last_activity
+                last_activity = asyncio.get_running_loop().time()
                 return approve_permission_response(options)
 
         client = CollectingClient()
@@ -350,12 +380,14 @@ class AcpCodingAgent:
                     cwd=cwd,
                     additional_directories=additional_directories or [],
                 )
-                response = await asyncio.wait_for(
+                last_activity = asyncio.get_running_loop().time()
+                response = await _await_with_idle_timeout(
                     conn.prompt(
                         session_id=session.session_id,
                         prompt=[text_block(combined_prompt)],
                     ),
                     timeout=config.request_timeout,
+                    last_activity=lambda: last_activity,
                 )
                 if response is not None:
                     raw_model = getattr(response, "model", None)

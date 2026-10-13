@@ -75,7 +75,10 @@ class Settings(BaseSettings):
         default=60.0,
         gt=0,
         allow_inf_nan=False,
-        description="Timeout in seconds for each ACP request before restarting the agent.",
+        description=(
+            "Idle timeout in seconds for an ACP request before restarting the agent. "
+            "Session activity resets this timer."
+        ),
     )
     acp_max_retries: int = Field(
         default=2,
