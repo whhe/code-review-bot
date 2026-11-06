@@ -247,7 +247,9 @@ def test_loader_returns_remote_url_skill_for_https_url(
     from code_review_bot.skill.filesystem import RemoteUrlSkill
 
     monkeypatch.setattr(loader, "_url_reachable", lambda _url: True)
-    skill = load_skill("https://github.com/whhe/ai-workshop/blob/main/skills/code-review/SKILL.md")
+    skill = load_skill(
+        "https://github.com/whhe/codex-workbench/blob/main/skills/code-review/SKILL.md"
+    )
     assert isinstance(skill, RemoteUrlSkill)
     assert skill.name == "code-review"
     assert skill.version  # non-empty hash
@@ -272,7 +274,7 @@ def test_loader_url_not_reachable_falls_back_to_native(
 def test_remote_url_skill_prompt_contains_url_and_fetch_instruction() -> None:
     from code_review_bot.skill.filesystem import RemoteUrlSkill
 
-    url = "https://github.com/whhe/ai-workshop/blob/main/skills/code-review/SKILL.md"
+    url = "https://github.com/whhe/codex-workbench/blob/main/skills/code-review/SKILL.md"
     skill = RemoteUrlSkill(url)
     prompt = skill.build_prompt(make_task_context())
     assert url in prompt
@@ -284,7 +286,7 @@ def test_remote_url_skill_name_strips_skill_md_suffix() -> None:
     from code_review_bot.skill.filesystem import RemoteUrlSkill
 
     skill = RemoteUrlSkill(
-        "https://github.com/whhe/ai-workshop/blob/main/skills/code-review/SKILL.md"
+        "https://github.com/whhe/codex-workbench/blob/main/skills/code-review/SKILL.md"
     )
     assert skill.name == "code-review"
 
@@ -292,7 +294,7 @@ def test_remote_url_skill_name_strips_skill_md_suffix() -> None:
 def test_remote_url_skill_name_from_directory_url() -> None:
     from code_review_bot.skill.filesystem import RemoteUrlSkill
 
-    skill = RemoteUrlSkill("https://github.com/whhe/ai-workshop/tree/main/skills/code-review")
+    skill = RemoteUrlSkill("https://github.com/whhe/codex-workbench/tree/main/skills/code-review")
     assert skill.name == "code-review"
 
 

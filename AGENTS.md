@@ -157,7 +157,8 @@ shared `docker/Dockerfile`: `whhe/code-review-bot:claude-code` and `:latest` bot
 stage, while `whhe/code-review-bot:opencode` selects the OpenCode stage. Agent-specific stages
 install only the selected package, keep OpenCode-only environment defaults out of Claude images,
 and leave package versions unpinned. The public image retains the `python:3.12-slim` base and
-installs the review skill into `~/.agents/skills/code-review`.
+installs the `code-review` skill from `whhe/codex-workbench` into
+`~/.agents/skills/code-review`.
 
 `docker/entrypoint.sh` runs the shared `docker/bootstrap.py`, then `exec`s the command. Bootstrap
 supports `ACP_AGENT_TYPE=claude` and `ACP_AGENT_TYPE=opencode`; other values fail. The image sets
