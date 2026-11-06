@@ -58,7 +58,7 @@ cp .env.example .env
 install the public code-review skill for a structured methodology:
 
 ```bash
-npx skills add whhe/ai-workshop --skill code-review --global --yes
+npx skills add whhe/codex-workbench --skill code-review --global --yes
 # installs to ~/.agents/skills/code-review — already the default in .env.example
 ```
 
