@@ -21,7 +21,7 @@ def test_shared_dockerfile_installs_only_selected_agent() -> None:
     assert "CLAUDE_VERSION" not in dockerfile
     assert "ACP_COMMAND" not in dockerfile
     assert "ACP_ARGS" not in dockerfile
-    assert "skills add whhe/ai-workshop --skill code-review" in dockerfile
+    assert "skills add whhe/codex-workbench --skill code-review" in dockerfile
     assert "REVIEW_SKILL=~/.agents/skills/code-review" in dockerfile
     assert "COPY skills/ ./skills/" not in dockerfile
     assert "https://deb.nodesource.com/setup_22.x" in dockerfile

@@ -95,8 +95,8 @@ enumerate instruction or configuration file names.
 ## Default review skill
 
 The image pre-installs the public `code-review` skill from
-[whhe/ai-workshop](https://github.com/whhe/ai-workshop) via
-`npx skills add whhe/ai-workshop --skill code-review --global --yes` and sets
+[whhe/codex-workbench](https://github.com/whhe/codex-workbench/tree/main/skills/code-review) via
+`npx skills add whhe/codex-workbench --skill code-review --global --yes` and sets
 `REVIEW_SKILL=~/.agents/skills/code-review`. The skill lands in the appuser
 home directory; the tilde is expanded at runtime by the bot. Reviews run with
 a consistent methodology baked into the image and require no network access to

@@ -52,9 +52,9 @@ USER appuser
 # Install the public code-review skill into the image so reviews work without network I/O.
 # The skill is installed to ~/.agents/skills/code-review (appuser home directory).
 RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then \
-        npx --registry "$NPM_CONFIG_REGISTRY" skills add whhe/ai-workshop --skill code-review --global --yes; \
+        npx --registry "$NPM_CONFIG_REGISTRY" skills add whhe/codex-workbench --skill code-review --global --yes; \
     else \
-        npx skills add whhe/ai-workshop --skill code-review --global --yes; \
+        npx skills add whhe/codex-workbench --skill code-review --global --yes; \
     fi
 
 ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY} \
